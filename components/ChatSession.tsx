@@ -34,7 +34,7 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
   const agents = Storage.getAgents();
   
   // Sidebar State
-  const [isHistoryOpen, setIsHistoryOpen] = useState(true);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [editingTitleId, setEditingTitleId] = useState<string | null>(null);
   const [tempTitle, setTempTitle] = useState('');
 
@@ -88,7 +88,9 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
     const responseText = await getDiagnostic(
       userMessage.text, 
       history, 
-      agent.systemInstruction
+      agent.systemInstruction,
+      true,
+      agent.brandName
     );
 
     const modelMessage: Message = {
@@ -121,12 +123,14 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
   // --- SIDEBAR ACTIONS ---
   const startRenaming = (e: React.MouseEvent, s: ChatSession) => {
       e.stopPropagation();
+      e.preventDefault();
       setEditingTitleId(s.id);
       setTempTitle(s.title);
   };
 
   const saveTitle = (e: React.MouseEvent, id: string) => {
       e.stopPropagation();
+      e.preventDefault();
       if(tempTitle.trim()) {
           Storage.renameSession(id, tempTitle);
           onSessionUpdate();
@@ -136,15 +140,25 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
 
   const cancelRenaming = (e: React.MouseEvent) => {
       e.stopPropagation();
+      e.preventDefault();
       setEditingTitleId(null);
   };
 
   const deleteSession = (e: React.MouseEvent, id: string) => {
       e.stopPropagation();
+      e.preventDefault();
       if(confirm('Excluir esta conversa?')) {
         Storage.deleteSession(id);
         onSessionUpdate();
-        if(id === sessionId) onBack(); 
+        if(id === sessionId) {
+          // Instead of going to dashboard, switch to another session
+          const remaining = allSessions.filter(s => s.id !== id && s.agentId === session?.agentId && !s.isArchived);
+          if (remaining.length > 0) {
+            onSelectSession(remaining[0].id);
+          } else {
+            onBack();
+          }
+        }
       }
   };
 
@@ -198,28 +212,44 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
     <div className="flex h-full bg-slate-50 relative overflow-hidden">
       
       {/* INTERNAL HISTORY SIDEBAR */}
+      {/* Overlay for mobile */}
+      {isHistoryOpen && (
+        <div 
+          className="fixed inset-0 bg-black/30 backdrop-blur-sm z-20 md:hidden"
+          onClick={() => setIsHistoryOpen(false)}
+        />
+      )}
       <div className={`
           flex-shrink-0 bg-white border-r border-slate-200 transition-all duration-300 flex flex-col
-          ${isHistoryOpen ? 'w-80 translate-x-0' : 'w-0 -translate-x-full opacity-0 overflow-hidden'} 
+          ${isHistoryOpen ? 'w-72 sm:w-80 translate-x-0' : 'w-0 -translate-x-full opacity-0 overflow-hidden'} 
           absolute md:relative h-full z-30 shadow-lg md:shadow-none
       `}>
-          <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+          <div className="p-3 sm:p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
              <div className="flex items-center gap-2 overflow-hidden">
                 <div className="p-1.5 bg-slate-200 rounded-lg">
                     <SidebarIcon size={16} className="text-slate-600" />
                 </div>
                 <span className="font-bold text-slate-700 text-sm truncate">{agent.name}</span>
              </div>
-             <button onClick={() => onCreateSession(agent.id)} className="p-2 hover:bg-blue-100 text-blue-600 rounded-lg transition-colors" title="Novo Chat">
-                 <Plus size={18} />
-             </button>
+             <div className="flex items-center gap-1">
+               <button onClick={() => onCreateSession(agent.id)} className="p-2 hover:bg-blue-100 text-blue-600 rounded-lg transition-colors" title="Novo Chat">
+                   <Plus size={18} />
+               </button>
+               <button onClick={() => setIsHistoryOpen(false)} className="p-2 hover:bg-slate-100 text-slate-400 rounded-lg transition-colors md:hidden" title="Fechar">
+                   <XIcon size={18} />
+               </button>
+             </div>
           </div>
           
           <div className="flex-1 overflow-y-auto p-2 custom-scrollbar">
               {agentSessions.map(s => (
                   <div 
                     key={s.id}
-                    onClick={() => onSelectSession(s.id)}
+                    onClick={() => {
+                        onSelectSession(s.id);
+                        // Close sidebar on mobile after selecting
+                        if (window.innerWidth < 768) setIsHistoryOpen(false);
+                    }}
                     className={`
                         group relative p-3 rounded-xl mb-1 cursor-pointer transition-all border
                         ${s.id === sessionId 
@@ -228,16 +258,17 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
                     `}
                   >
                       {editingTitleId === s.id ? (
-                           <div className="flex items-center gap-1">
+                           <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
                                <input 
                                    autoFocus
                                    value={tempTitle}
                                    onChange={e => setTempTitle(e.target.value)}
+                                   onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') saveTitle(e as any, s.id); if (e.key === 'Escape') { setEditingTitleId(null); } }}
                                    onClick={e => e.stopPropagation()}
-                                   className="w-full text-xs p-1 border border-blue-300 rounded focus:outline-none"
+                                   className="w-full text-xs p-1.5 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400"
                                />
-                               <button onClick={(e) => saveTitle(e, s.id)} className="text-green-600 p-1 hover:bg-green-100 rounded"><Check size={14}/></button>
-                               <button onClick={cancelRenaming} className="text-red-500 p-1 hover:bg-red-100 rounded"><XIcon size={14}/></button>
+                               <button onClick={(e) => saveTitle(e, s.id)} className="text-green-600 p-1.5 hover:bg-green-100 rounded-lg"><Check size={14}/></button>
+                               <button onClick={cancelRenaming} className="text-red-500 p-1.5 hover:bg-red-100 rounded-lg"><XIcon size={14}/></button>
                            </div>
                       ) : (
                         <div className="flex justify-between items-start">
@@ -247,9 +278,9 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
                              </div>
                              
                              {/* Hover Actions */}
-                             <div className="absolute right-2 top-2 hidden group-hover:flex bg-white/90 rounded-md shadow-sm border border-slate-100">
-                                 <button onClick={(e) => startRenaming(e, s)} className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded"><Edit2 size={12} /></button>
-                                 <button onClick={(e) => deleteSession(e, s.id)} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded"><Trash2 size={12} /></button>
+                             <div className="absolute right-1 top-1 hidden group-hover:flex bg-white rounded-lg shadow-md border border-slate-200 overflow-hidden" onClick={e => e.stopPropagation()}>
+                                 <button onClick={(e) => startRenaming(e, s)} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors" title="Renomear"><Edit2 size={14} /></button>
+                                 <button onClick={(e) => deleteSession(e, s.id)} className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors" title="Excluir"><Trash2 size={14} /></button>
                              </div>
                         </div>
                       )}
@@ -320,12 +351,12 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
         {/* Messages */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-8 z-10 custom-scrollbar bg-slate-50">
             {session.messages.length === 0 && (
-            <div className="text-center py-20 opacity-80 flex flex-col items-center animate-fade-in">
-                <div className="w-20 h-20 bg-white rounded-full border border-slate-200 flex items-center justify-center mb-6 text-voltz-primary shadow-sm">
-                    <Zap size={40} fill="currentColor" className="text-voltz-light stroke-voltz-accent" />
+            <div className="text-center py-10 sm:py-20 opacity-80 flex flex-col items-center animate-fade-in">
+                <div className="w-16 h-16 sm:w-20 sm:h-20 bg-white rounded-full border border-slate-200 flex items-center justify-center mb-4 sm:mb-6 text-voltz-primary shadow-sm">
+                    <Zap size={32} fill="currentColor" className="text-voltz-light stroke-voltz-accent sm:w-10 sm:h-10" />
                 </div>
-                <p className="text-slate-500 text-lg">Inicie o diagnóstico com <span className="text-slate-900 font-bold">{agent.name}</span>.</p>
-                <p className="text-slate-400 text-sm mt-2 max-w-sm">O histórico de conversas deste especialista está disponível no menu lateral.</p>
+                <p className="text-slate-500 text-base sm:text-lg">Inicie o diagn&oacute;stico com <span className="text-slate-900 font-bold">{agent.name}</span>.</p>
+                <p className="text-slate-400 text-xs sm:text-sm mt-2 max-w-sm px-4">O hist&oacute;rico de conversas deste especialista est&aacute; dispon&iacute;vel no menu lateral.</p>
             </div>
             )}
             
@@ -335,7 +366,7 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
                 className={`flex w-full ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
             >
                 <div
-                className={`flex max-w-[90%] sm:max-w-[80%] lg:max-w-[70%] ${
+                className={`flex max-w-[95%] sm:max-w-[80%] lg:max-w-[70%] ${
                     message.role === 'user' ? 'flex-row-reverse' : 'flex-row'
                 }`}
                 >
@@ -347,11 +378,31 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
                     }`}
                 >
                     {message.role === 'model' ? (
-                        <div className="prose prose-sm max-w-none prose-slate">
+                        <div className="markdown-body text-slate-700 space-y-4">
                             <ReactMarkdown 
                                 components={{
-                                    code: ({node, ...props}) => <span className="bg-slate-100 text-voltz-primary px-1.5 py-0.5 rounded font-mono text-xs border border-slate-200" {...props} />,
-                                    strong: ({node, ...props}) => <strong className="text-slate-900 font-bold" {...props} />
+                                    h1: ({node, ...props}) => <h1 className="text-xl font-bold text-slate-900 mt-6 mb-3 pb-2 border-b border-slate-200 first:mt-0" {...props} />,
+                                    h2: ({node, ...props}) => <h2 className="text-base font-bold text-slate-900 mt-5 mb-2 first:mt-0 flex items-center gap-1.5" {...props} />,
+                                    h3: ({node, ...props}) => <h3 className="text-sm font-bold text-slate-800 mt-4 mb-2 first:mt-0 uppercase tracking-wide" {...props} />,
+                                    p: ({node, ...props}) => <p className="mb-4 last:mb-0 leading-7 text-slate-600" {...props} />,
+                                    ul: ({node, ...props}) => <ul className="mb-4 ml-1 space-y-2 list-none" {...props} />,
+                                    ol: ({node, ...props}) => <ol className="mb-4 ml-1 space-y-2 list-decimal list-inside" {...props} />,
+                                    li: ({node, children, ...props}) => (
+                                      <li className="flex items-start gap-2.5 leading-7 text-slate-600" {...props}>
+                                        <span className="text-blue-500 mt-1.5 flex-shrink-0">•</span>
+                                        <span>{children}</span>
+                                      </li>
+                                    ),
+                                    strong: ({node, ...props}) => <strong className="text-slate-900 font-semibold bg-blue-50/60 px-1 rounded" {...props} />,
+                                    em: ({node, ...props}) => <em className="text-slate-500 italic" {...props} />,
+                                    code: ({node, ...props}) => <code className="bg-slate-100 text-blue-700 px-1.5 py-0.5 rounded font-mono text-xs border border-slate-200" {...props} />,
+                                    hr: ({node, ...props}) => <hr className="my-5 border-slate-200" {...props} />,
+                                    blockquote: ({node, ...props}) => <blockquote className="border-l-4 border-blue-400 bg-blue-50/50 pl-4 py-3 my-4 rounded-r-lg text-slate-600" {...props} />,
+                                    a: ({node, ...props}) => <a className="text-blue-600 underline hover:text-blue-800" target="_blank" rel="noreferrer" {...props} />,
+                                    table: ({node, ...props}) => <div className="overflow-x-auto my-4"><table className="min-w-full text-sm border border-slate-200 rounded-lg overflow-hidden" {...props} /></div>,
+                                    thead: ({node, ...props}) => <thead className="bg-slate-100" {...props} />,
+                                    th: ({node, ...props}) => <th className="px-3 py-2.5 text-left font-bold text-slate-800 border-b border-slate-200" {...props} />,
+                                    td: ({node, ...props}) => <td className="px-3 py-2.5 border-b border-slate-100" {...props} />,
                                 }}
                             >
                                 {message.text}
@@ -380,7 +431,7 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
         </div>
 
         {/* Input */}
-        <div className="bg-white/80 backdrop-blur border-t border-slate-200 p-4 sm:p-6 shadow-lg z-20">
+        <div className="bg-white/80 backdrop-blur border-t border-slate-200 p-3 sm:p-4 md:p-6 shadow-lg z-20">
             <div className="max-w-4xl mx-auto relative flex items-center">
             <div className="flex-1 relative group">
                 <input
@@ -389,7 +440,7 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyPress}
                 placeholder={`Descreva a falha ou código de erro...`}
-                className="w-full bg-slate-50 text-slate-900 placeholder-slate-400 border border-slate-300 rounded-xl py-4 pl-5 pr-14 focus:ring-2 focus:ring-voltz-accent/30 focus:border-voltz-accent focus:bg-white transition-all shadow-inner"
+                className="w-full bg-slate-50 text-slate-900 placeholder-slate-400 border border-slate-300 rounded-xl py-3 sm:py-4 pl-4 sm:pl-5 pr-12 sm:pr-14 focus:ring-2 focus:ring-voltz-accent/30 focus:border-voltz-accent focus:bg-white transition-all shadow-inner text-sm sm:text-base"
                 disabled={isLoading}
                 autoFocus
                 />
@@ -406,9 +457,10 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
                 </button>
             </div>
             </div>
-            <p className="text-center text-xs text-slate-500 mt-3 flex items-center justify-center gap-1">
+            <p className="text-center text-[10px] sm:text-xs text-slate-500 mt-2 sm:mt-3 flex items-center justify-center gap-1">
                 <Shield size={10} className="text-slate-400"/>
-                Ambiente Seguro. As respostas são geradas por IA e revisadas por normas técnicas.
+                <span className="hidden sm:inline">Ambiente Seguro. As respostas são geradas por IA e revisadas por normas técnicas.</span>
+                <span className="sm:hidden">Respostas geradas por IA</span>
             </p>
         </div>
       </div>

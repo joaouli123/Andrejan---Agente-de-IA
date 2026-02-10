@@ -1,7 +1,8 @@
 
-import React, { useState } from 'react';
-import { UserProfile, Agent } from '../types';
+import React, { useState, useEffect } from 'react';
+import { UserProfile, Agent, Brand } from '../types';
 import * as Storage from '../services/storage';
+import { supabase } from '../services/supabase';
 import { 
     Bot, Save, Trash2, Edit3, Plus, Terminal, 
     BookOpen, Sparkles, Check, X, AlertCircle 
@@ -18,6 +19,7 @@ const ICONS_LIST = ['Bot', 'Zap', 'Wrench', 'Shield', 'Code', 'Database', 'Cpu',
 const AgentBuilder: React.FC<AgentBuilderProps> = ({ user, onAgentCreated }) => {
     const [agents, setAgents] = useState<Agent[]>(Storage.getAgents());
     const [view, setView] = useState<'list' | 'create'>('list');
+    const [brands, setBrands] = useState<Brand[]>([]);
     
     // Form State
     const [name, setName] = useState('');
@@ -25,6 +27,16 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ user, onAgentCreated }) => 
     const [description, setDescription] = useState('');
     const [instruction, setInstruction] = useState('');
     const [selectedIcon, setSelectedIcon] = useState('Bot');
+    const [selectedBrand, setSelectedBrand] = useState('');
+
+    // Load brands from Supabase
+    useEffect(() => {
+        const fetchBrands = async () => {
+            const { data } = await supabase.from('brands').select('*').order('name');
+            if (data) setBrands(data);
+        };
+        fetchBrands();
+    }, []);
 
     const handleCreate = (e: React.FormEvent) => {
         e.preventDefault();
@@ -37,6 +49,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ user, onAgentCreated }) => 
             icon: selectedIcon,
             color: 'blue',
             systemInstruction: instruction,
+            brandName: selectedBrand || undefined,
             isCustom: true,
             createdBy: user.id
         };
@@ -62,6 +75,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ user, onAgentCreated }) => 
         setDescription('');
         setInstruction('');
         setSelectedIcon('Bot');
+        setSelectedBrand('');
     };
 
     if (view === 'create') {
@@ -69,13 +83,13 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ user, onAgentCreated }) => 
         const SelectedIconComp = Icons[selectedIcon] || Icons.Bot;
 
         return (
-            <div className="h-full overflow-y-auto p-6 lg:p-12 bg-slate-50">
+            <div className="h-full overflow-y-auto p-4 sm:p-6 lg:p-12 bg-slate-50">
                 <div className="max-w-3xl mx-auto">
-                    <div className="flex items-center gap-4 mb-8">
+                    <div className="flex items-center gap-3 sm:gap-4 mb-6 sm:mb-8">
                         <button onClick={() => setView('list')} className="p-2 hover:bg-white rounded-lg border border-transparent hover:border-slate-200 transition-all">
                             <X className="text-slate-500" />
                         </button>
-                        <h1 className="text-2xl font-bold text-slate-900">Criar Novo Especialista</h1>
+                        <h1 className="text-xl sm:text-2xl font-bold text-slate-900">Criar Novo Especialista</h1>
                     </div>
 
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -134,6 +148,26 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ user, onAgentCreated }) => 
                                             )
                                         })}
                                     </div>
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-bold text-slate-700 mb-2 flex items-center justify-between">
+                                        <span>📚 Marca / Base de Conhecimento</span>
+                                        <span className="text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded">Filtra documentos</span>
+                                    </label>
+                                    <p className="text-xs text-slate-500 mb-2">
+                                        Selecione a marca para que o agente responda APENAS com os documentos dessa marca.
+                                    </p>
+                                    <select
+                                        value={selectedBrand}
+                                        onChange={e => setSelectedBrand(e.target.value)}
+                                        className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white"
+                                    >
+                                        <option value="">🌐 Todas as marcas (sem filtro)</option>
+                                        {brands.map(b => (
+                                            <option key={b.id} value={b.name}>{b.name}</option>
+                                        ))}
+                                    </select>
                                 </div>
 
                                 <div>
@@ -205,24 +239,24 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ user, onAgentCreated }) => 
     }
 
     return (
-        <div className="h-full overflow-y-auto p-6 lg:p-12 bg-slate-50">
+        <div className="h-full overflow-y-auto p-4 sm:p-6 lg:p-12 bg-slate-50">
             <div className="max-w-6xl mx-auto">
-                <div className="flex flex-col md:flex-row md:items-center justify-between mb-10 gap-4">
+                <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 sm:mb-10 gap-4">
                     <div>
-                        <h1 className="text-3xl font-extrabold text-slate-900 flex items-center gap-3">
+                        <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 flex items-center gap-2 sm:gap-3">
                             <Bot className="text-slate-900" /> Meus Agentes
                         </h1>
-                        <p className="text-slate-500 mt-2">Crie, treine e gerencie seus especialistas virtuais.</p>
+                        <p className="text-slate-500 mt-1 sm:mt-2 text-sm sm:text-base">Crie, treine e gerencie seus especialistas virtuais.</p>
                     </div>
                     <button 
                         onClick={() => setView('create')}
-                        className="bg-blue-600 text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-blue-200 hover:bg-blue-700 transition-all flex items-center gap-2"
+                        className="bg-blue-600 text-white px-4 sm:px-6 py-2.5 sm:py-3 rounded-xl font-bold shadow-lg shadow-blue-200 hover:bg-blue-700 transition-all flex items-center gap-2 text-sm sm:text-base w-fit"
                     >
                         <Plus size={20} /> Criar Novo Agente
                     </button>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
                     {agents.filter(a => a.isCustom).length === 0 && (
                         <div className="col-span-full py-16 text-center border-2 border-dashed border-slate-200 rounded-2xl bg-white">
                             <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4 text-slate-300">
@@ -254,6 +288,11 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ user, onAgentCreated }) => 
                                 </div>
                                 <h3 className="font-bold text-slate-900 text-lg">{agent.name}</h3>
                                 <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">{agent.role}</p>
+                                {agent.brandName && (
+                                    <span className="inline-flex items-center gap-1 px-2 py-1 mb-2 rounded-full text-[10px] font-bold bg-blue-100 text-blue-700 border border-blue-200">
+                                        📚 {agent.brandName}
+                                    </span>
+                                )}
                                 <p className="text-sm text-slate-600 line-clamp-2 mb-4">{agent.description}</p>
                                 
                                 <div className="flex items-center text-xs text-slate-400 gap-1 bg-slate-50 p-2 rounded-lg border border-slate-100">

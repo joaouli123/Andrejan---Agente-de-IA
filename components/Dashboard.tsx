@@ -2,41 +2,39 @@
 import React, { useState, useEffect } from 'react';
 import { 
   LayoutDashboard, 
-  History, 
   CreditCard, 
   User, 
   LogOut, 
   Menu, 
   X,
   Zap,
-  Bot,
   Users,
-  TrendingUp,
   PieChart,
   BarChart3,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Database,
+  Bot
 } from 'lucide-react';
 import { ChatSession, UserProfile } from '../types';
 import * as Storage from '../services/storage';
 import ChatSessionView from './ChatSession';
-import AgentBuilder from './AgentBuilder';
 import { 
   AgentsGrid, 
-  HistoryView, 
   FinancialView, 
   ProfileView, 
   AdminOverview, 
   AdminUsers, 
-  AdminFinance, 
   UsageView 
 } from './DashboardViews';
+import AdminDashboard from './admin/AdminDashboard';
+import AgentBuilder from './AgentBuilder';
 
 interface DashboardProps {
   onLogout: () => void;
 }
 
-type View = 'agents' | 'chat' | 'history' | 'financial' | 'usage' | 'builder' | 'profile' | 'admin' | 'admin_users' | 'admin_finance';
+type View = 'agents' | 'chat' | 'financial' | 'usage' | 'profile' | 'admin' | 'admin_brands_models' | 'admin_users' | 'agent_builder';
 
 const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   const [currentView, setCurrentView] = useState<View>('agents');
@@ -144,7 +142,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
       <aside className={`
         fixed md:relative z-50 h-full bg-slate-900 flex flex-col transition-all duration-300 ease-in-out border-r border-slate-800 shadow-2xl
         ${isSidebarOpen ? 'translate-x-0 w-72' : '-translate-x-full md:translate-x-0'}
-        ${isCollapsed ? 'md:w-20' : 'md:w-72'}
+        ${isCollapsed ? 'md:w-20' : 'md:w-64 lg:w-72'}
       `}>
         {/* Toggle Button (Desktop Only) */}
         <button 
@@ -154,7 +152,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
             {isCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
         </button>
 
-        <div className={`h-24 flex items-center ${isCollapsed ? 'justify-center px-0' : 'px-8'} border-b border-slate-800/50 flex-shrink-0 transition-all`}>
+        <div className={`h-16 sm:h-24 flex items-center ${isCollapsed ? 'justify-center px-0' : 'px-4 sm:px-8'} border-b border-slate-800/50 flex-shrink-0 transition-all`}>
           <div className="bg-gradient-to-tr from-blue-500 to-cyan-400 p-2.5 rounded-xl shadow-[0_0_15px_rgba(59,130,246,0.5)] flex-shrink-0">
             <Zap className="h-6 w-6 text-white" fill="currentColor" />
           </div>
@@ -175,10 +173,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
         <nav className="flex-1 overflow-y-auto px-3 py-6 space-y-2 custom-scrollbar">
           {!isCollapsed && <div className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4 px-4">Principal</div>}
           <SidebarItem view="agents" icon={LayoutDashboard} label="Dashboard" />
-          <SidebarItem view="history" icon={History} label="Histórico" />
-          
           {user.isAdmin && (
-             <SidebarItem view="builder" icon={Bot} label="Criar Agentes" />
+            <SidebarItem view="agent_builder" icon={Bot} label="Criar Agentes" />
           )}
 
           <SidebarSection title="Minha Conta" />
@@ -191,8 +187,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
               <>
                  <SidebarSection title="Administração" />
                  <SidebarItem view="admin" icon={PieChart} label="Visão Geral" />
-                 <SidebarItem view="admin_users" icon={Users} label="Base de Usuários" />
-                 <SidebarItem view="admin_finance" icon={TrendingUp} label="Receita & Planos" />
+                 <SidebarItem view="admin_brands_models" icon={Database} label="Marcas & Agentes" />
+                 <SidebarItem view="admin_users" icon={Users} label="Usuários & Planos" />
               </>
           )}
           
@@ -209,8 +205,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
         <div className={`p-4 bg-slate-950/30 border-t border-slate-800 mt-auto transition-all ${isCollapsed ? 'flex justify-center' : ''}`}>
           <div className={`flex items-center ${isCollapsed ? 'justify-center' : 'space-x-3'} p-2 rounded-xl transition-colors hover:bg-white/5 cursor-pointer`}>
             <div className="relative flex-shrink-0">
-                <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-blue-600 to-cyan-500 flex items-center justify-center text-sm font-bold text-white shadow-lg border-2 border-slate-800">
-                {user.name.charAt(0)}
+                <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-blue-600 to-cyan-500 flex items-center justify-center text-sm font-bold text-white shadow-lg border-2 border-slate-800 overflow-hidden">
+                  {user.avatar ? (
+                    <img src={user.avatar} alt={user.name} className="w-full h-full object-cover" />
+                  ) : (
+                    user.name.charAt(0)
+                  )}
                 </div>
                 <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-slate-900 rounded-full"></div>
             </div>
@@ -219,7 +219,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                 <p className="text-sm font-semibold truncate text-white">{user.name}</p>
                 <div className="flex items-center mt-0.5">
                     <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-500/20 text-blue-300 border border-blue-500/30 uppercase tracking-wide">
-                        {user.plan}
+                        {user.creditsLimit === 'Infinity' ? 'ILIMITADO' : `${user.creditsUsed} / ${user.creditsLimit} CONSULTAS`}
                     </span>
                 </div>
                 </div>
@@ -239,6 +239,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
 
         <div className="flex-1 overflow-hidden relative">
           {currentView === 'agents' && <AgentsGrid user={user} onSelectAgent={handleStartChat} />}
+
+          {currentView === 'agent_builder' && user.isAdmin && (
+            <AgentBuilder user={user} onAgentCreated={() => handleNav('agents')} />
+          )}
           
           {currentView === 'chat' && activeSessionId && (
             <ChatSessionView 
@@ -251,26 +255,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
             />
           )}
 
-          {currentView === 'history' && (
-            <HistoryView 
-              sessions={sessions} 
-              onSelectSession={handleOpenSession}
-              onDeleteSession={handleDeleteSession}
-            />
-          )}
-
-          {currentView === 'builder' && user.isAdmin && (
-             <AgentBuilder user={user} onAgentCreated={() => console.log('created')} />
-          )}
-
           {currentView === 'financial' && <FinancialView user={user} />}
           {currentView === 'usage' && <UsageView user={user} />}
           {currentView === 'profile' && <ProfileView user={user} />}
 
-          {/* Separate Admin Views */}
+          {/* Admin Views */}
           {currentView === 'admin' && user.isAdmin && <AdminOverview />}
+          {currentView === 'admin_brands_models' && user.isAdmin && (
+            <div className="h-full overflow-y-auto bg-slate-50">
+              <AdminDashboard />
+            </div>
+          )}
           {currentView === 'admin_users' && user.isAdmin && <AdminUsers />}
-          {currentView === 'admin_finance' && user.isAdmin && <AdminFinance />}
         </div>
       </main>
     </div>

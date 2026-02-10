@@ -1,6 +1,6 @@
 
-import React, { useState } from 'react';
-import { Zap, ShieldCheck, User, Lock, ArrowRight } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Zap, ShieldCheck, User, Lock, ArrowRight, Cpu, ArrowLeft } from 'lucide-react';
 import * as Storage from '../services/storage';
 
 interface AuthProps {
@@ -13,6 +13,17 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess, onBack }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+
+  // Auto-fill demo credentials
+  useEffect(() => {
+    if (role === 'admin') {
+      setEmail('admin@elevex.com');
+      setPassword('admin123');
+    } else {
+      setEmail('carlos@tecnico.com');
+      setPassword('123456');
+    }
+  }, [role]);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -27,14 +38,36 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess, onBack }) => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-900 flex flex-col justify-center items-center p-4 relative overflow-hidden">
+    <div className="min-h-screen bg-slate-900 flex flex-col relative overflow-hidden">
       {/* Background decoration */}
       <div className="absolute top-0 left-0 w-full h-full overflow-hidden z-0">
           <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-600/20 rounded-full blur-[100px]"></div>
           <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-cyan-500/10 rounded-full blur-[100px]"></div>
       </div>
 
-      <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl overflow-hidden z-10 relative animate-fade-in">
+      {/* Header */}
+      <header className="relative z-10 border-b border-white/10">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center h-16">
+            <div className="flex items-center cursor-pointer" onClick={onBack}>
+              <div className="bg-blue-600 p-2 rounded-lg mr-2">
+                <Cpu className="h-5 w-5 text-white" />
+              </div>
+              <span className="text-lg font-bold text-white tracking-tight">Elevex</span>
+            </div>
+            <button 
+              onClick={onBack} 
+              className="text-slate-400 hover:text-white text-sm font-medium flex items-center gap-1.5 transition-colors"
+            >
+              <ArrowLeft size={16} /> Voltar
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Content */}
+      <div className="flex-1 flex items-center justify-center p-4 relative z-10">
+      <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl overflow-hidden animate-fade-in">
         <div className="p-8 text-center bg-slate-50 border-b border-slate-100">
              <div className="flex justify-center mb-4">
                  <div className="bg-gradient-to-tr from-blue-600 to-cyan-500 p-3 rounded-2xl shadow-lg">
@@ -73,7 +106,6 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess, onBack }) => {
                         <User className="absolute left-3 top-3.5 text-slate-400" size={18} />
                         <input 
                             type="email" 
-                            required
                             value={email}
                             onChange={(e) => setEmail(e.target.value)}
                             className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-slate-800"
@@ -88,7 +120,6 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess, onBack }) => {
                         <Lock className="absolute left-3 top-3.5 text-slate-400" size={18} />
                         <input 
                             type="password" 
-                            required
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-slate-800"
@@ -126,6 +157,16 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess, onBack }) => {
             </p>
         </div>
       </div>
+      </div>
+
+      {/* Footer */}
+      <footer className="relative z-10 border-t border-white/10 py-6 mt-auto">
+        <div className="max-w-7xl mx-auto px-4 text-center">
+          <p className="text-slate-500 text-sm">
+            &copy; {new Date().getFullYear()} Elevex Tecnologia Ltda. Todos os direitos reservados.
+          </p>
+        </div>
+      </footer>
     </div>
   );
 };

@@ -2,12 +2,13 @@ import React from 'react';
 import { Cpu, Menu, X } from 'lucide-react';
 
 interface HeaderProps {
-  currentView: 'landing' | 'app';
-  onNavigateHome: () => void;
-  onNavigateApp: () => void;
+  currentView?: 'landing' | 'app';
+  onNavigateHome?: () => void;
+  onNavigateApp?: () => void;
+  onLogin?: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ currentView, onNavigateHome, onNavigateApp }) => {
+const Header: React.FC<HeaderProps> = ({ currentView = 'landing', onNavigateHome, onNavigateApp, onLogin }) => {
   const [isMenuOpen, setIsMenuOpen] = React.useState(false);
 
   return (
@@ -32,16 +33,29 @@ const Header: React.FC<HeaderProps> = ({ currentView, onNavigateHome, onNavigate
                 <a href="#faq" className="text-slate-600 hover:text-blue-600 font-medium transition-colors">FAQ</a>
               </>
             )}
-            <button
-              onClick={currentView === 'app' ? onNavigateHome : onNavigateApp}
-              className={`px-5 py-2 rounded-full font-semibold transition-all shadow-md hover:shadow-lg ${
-                currentView === 'app'
-                  ? 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                  : 'bg-blue-600 text-white hover:bg-blue-700'
-              }`}
-            >
-              {currentView === 'app' ? 'Voltar ao Início' : 'Começar Agora'}
-            </button>
+            {currentView === 'landing' ? (
+              <>
+                <button
+                  onClick={onLogin}
+                  className="px-5 py-2 rounded-full font-semibold transition-all border-2 border-blue-600 text-blue-600 hover:bg-blue-50"
+                >
+                  Entrar
+                </button>
+                <button
+                  onClick={onNavigateApp}
+                  className="px-5 py-2 rounded-full font-semibold transition-all shadow-md hover:shadow-lg bg-blue-600 text-white hover:bg-blue-700"
+                >
+                  Começar Agora
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={onNavigateHome}
+                className="px-5 py-2 rounded-full font-semibold transition-all shadow-md hover:shadow-lg bg-slate-100 text-slate-700 hover:bg-slate-200"
+              >
+                Voltar ao Início
+              </button>
+            )}
           </nav>
 
           {/* Mobile Menu Button */}
@@ -67,19 +81,38 @@ const Header: React.FC<HeaderProps> = ({ currentView, onNavigateHome, onNavigate
                 <a onClick={() => setIsMenuOpen(false)} href="#pricing" className="block px-3 py-2 text-base font-medium text-slate-600 hover:text-blue-600 hover:bg-slate-50 rounded-md">Planos</a>
               </>
              )}
-            <button
-              onClick={() => {
-                if (currentView === 'app') {
-                  onNavigateHome();
-                } else {
-                  onNavigateApp();
-                }
-                setIsMenuOpen(false);
-              }}
-              className="w-full text-left block px-3 py-2 text-base font-bold text-blue-600 hover:bg-blue-50 rounded-md"
-            >
-              {currentView === 'app' ? 'Voltar ao Início' : 'Acessar App'}
-            </button>
+            {currentView === 'landing' ? (
+              <>
+                <button
+                  onClick={() => {
+                    onLogin?.();
+                    setIsMenuOpen(false);
+                  }}
+                  className="w-full text-left block px-3 py-2 text-base font-bold text-blue-600 hover:bg-blue-50 rounded-md"
+                >
+                  Entrar
+                </button>
+                <button
+                  onClick={() => {
+                    onNavigateApp?.();
+                    setIsMenuOpen(false);
+                  }}
+                  className="w-full text-left block px-3 py-2 text-base font-bold text-blue-600 hover:bg-blue-50 rounded-md"
+                >
+                  Começar Agora
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={() => {
+                  onNavigateHome?.();
+                  setIsMenuOpen(false);
+                }}
+                className="w-full text-left block px-3 py-2 text-base font-bold text-blue-600 hover:bg-blue-50 rounded-md"
+              >
+                Voltar ao Início
+              </button>
+            )}
           </div>
         </div>
       )}

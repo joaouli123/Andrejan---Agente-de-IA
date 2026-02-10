@@ -22,3 +22,19 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Environment variables (API keys)
+.env
+server/.env
+
+# Data files (too large for git)
+server/data/vectors.json
+server/data/pdfs/
+server/data/chroma/
+
+# Tesseract OCR data
+*.traineddata
+
+# Lock files
+package-lock.json
+server/package-lock.json

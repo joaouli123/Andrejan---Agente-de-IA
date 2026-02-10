@@ -1,100 +1,109 @@
-import React from 'react';
+﻿import React from 'react';
 import { Check } from 'lucide-react';
 
+export interface Plan {
+  id: string;
+  name: string;
+  price: number;
+  period: string;
+  features: string[];
+  queries: string;
+  devices: string;
+  popular?: boolean;
+}
+
+export const PLANS: Plan[] = [
+  {
+    id: 'free',
+    name: 'Free',
+    price: 0,
+    period: 'mês',
+    queries: '1 consulta a cada 24h',
+    devices: '1 dispositivo',
+    features: ['1 consulta a cada 24h', '1 dispositivo', 'Acesso básico'],
+    popular: false
+  },
+  {
+    id: 'iniciante',
+    name: 'Iniciante',
+    price: 9.99,
+    period: 'mês',
+    queries: '5 consultas a cada 24h',
+    devices: '1 dispositivo',
+    features: ['5 consultas a cada 24h', '1 dispositivo', 'Histórico de 7 dias'],
+    popular: false
+  },
+  {
+    id: 'profissional',
+    name: 'Profissional',
+    price: 19.99,
+    period: 'mês',
+    queries: 'Consultas ilimitadas',
+    devices: '1 dispositivo',
+    features: ['Consultas ilimitadas', '1 dispositivo', 'Suporte prioritário', 'Histórico completo'],
+    popular: true
+  },
+  {
+    id: 'empresa',
+    name: 'Empresa',
+    price: 99.99,
+    period: 'mês',
+    queries: 'Consultas ilimitadas',
+    devices: 'Até 5 dispositivos',
+    features: ['Consultas ilimitadas', 'Até 5 dispositivos', 'Logins simultâneos', 'Dashboard de gestão'],
+    popular: false
+  }
+];
+
 interface PricingProps {
-  onSelectPlan: () => void;
+  onSelectPlan: (plan: Plan) => void;
 }
 
 const Pricing: React.FC<PricingProps> = ({ onSelectPlan }) => {
-  const plans = [
-    {
-      name: 'Free',
-      price: 'R$ 0',
-      period: '/mês',
-      features: ['1 consulta a cada 24h', '1 dispositivo', 'Acesso básico'],
-      cta: 'Começar Grátis',
-      highlight: false,
-      color: 'slate'
-    },
-    {
-      name: 'Iniciante',
-      price: 'R$ 9,99',
-      period: '/mês',
-      features: ['5 consultas a cada 24h', '1 dispositivo', 'Histórico de 7 dias'],
-      cta: 'Assinar Iniciante',
-      highlight: false,
-      color: 'blue'
-    },
-    {
-      name: 'Profissional',
-      price: 'R$ 19,99',
-      period: '/mês',
-      features: ['Consultas ilimitadas', '1 dispositivo', 'Suporte prioritário', 'Histórico completo'],
-      cta: 'Assinar Profissional',
-      highlight: true,
-      color: 'amber'
-    },
-    {
-      name: 'Empresa',
-      price: 'R$ 99,99',
-      period: '/mês',
-      features: ['Consultas ilimitadas', 'Até 5 dispositivos', 'Logins simultâneos', 'Dashboard de gestão'],
-      cta: 'Assinar Empresa',
-      highlight: false,
-      color: 'slate'
-    },
-  ];
-
   return (
-    <div id="pricing" className="py-24 bg-white relative">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="text-center mb-16">
-          <h2 className="text-3xl font-extrabold text-slate-900">Planos e Preços</h2>
-          <p className="mt-4 text-xl text-slate-500">Escolha o plano ideal para suas necessidades</p>
+    <div id='pricing' className='py-24 bg-white relative'>
+      <div className='max-w-7xl mx-auto px-4 sm:px-6 lg:px-8'>
+        <div className='text-center mb-16'>
+          <h2 className='text-3xl font-extrabold text-slate-900'>Planos e Preços</h2>
+          <p className='mt-4 text-xl text-slate-500'>Escolha o plano ideal para suas necessidades</p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-8">
-          {plans.map((plan, index) => (
-            <div 
-              key={index} 
-              className={`relative flex flex-col p-8 rounded-2xl border ${
-                plan.highlight 
-                  ? 'border-blue-500 shadow-2xl scale-105 z-10 bg-white' 
-                  : 'border-slate-200 shadow-sm bg-slate-50 hover:shadow-lg transition-shadow'
-              }`}
+        <div className='grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-8'>
+          {PLANS.map((plan) => (
+            <div
+              key={plan.id}
+              className='relative flex flex-col p-8 rounded-2xl border'
             >
-              {plan.highlight && (
-                <div className="absolute top-0 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-blue-600 text-white px-4 py-1 rounded-full text-sm font-bold uppercase tracking-wide">
+              {plan.popular && (
+                <div className='absolute top-0 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-blue-600 text-white px-4 py-1 rounded-full text-sm font-bold uppercase tracking-wide'>
                   Mais Popular
                 </div>
               )}
 
-              <div className="mb-6">
-                <h3 className={`text-lg font-semibold text-${plan.color === 'amber' ? 'slate-900' : 'slate-900'}`}>{plan.name}</h3>
-                <div className="mt-4 flex items-baseline">
-                  <span className="text-4xl font-extrabold text-slate-900">{plan.price}</span>
-                  <span className="ml-1 text-xl font-medium text-slate-500">{plan.period}</span>
+              <div className='mb-6'>
+                <h3 className='text-lg font-semibold text-slate-900'>{plan.name}</h3>
+                <div className='mt-4 flex items-baseline'>
+                  <span className='text-4xl font-extrabold text-slate-900'>
+                    {plan.price === 0 ? 'R$ 0' : `R$ ${plan.price.toFixed(2)}`}
+                  </span>
+                  <span className='ml-1 text-xl font-medium text-slate-500'>/{plan.period}</span>
                 </div>
               </div>
 
-              <ul className="flex-1 space-y-4 mb-8">
+              <ul className='flex-1 space-y-4 mb-8'>
                 {plan.features.map((feature, idx) => (
-                  <li key={idx} className="flex items-start">
-                    <Check className={`flex-shrink-0 h-5 w-5 ${plan.highlight ? 'text-blue-600' : 'text-slate-400'}`} />
-                    <span className="ml-3 text-slate-600 text-sm">{feature}</span>
+                  <li key={idx} className='flex items-start'>
+                    <Check className='flex-shrink-0 h-5 w-5' />
+                    <span className='ml-3 text-slate-600 text-sm'>{feature}</span>
                   </li>
                 ))}
               </ul>
 
               <button
-                onClick={onSelectPlan}
-                className={`w-full py-3 px-4 rounded-lg font-bold transition-colors ${
-                  plan.highlight
-                    ? 'bg-blue-600 text-white hover:bg-blue-700'
-                    : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-50'
-                }`}
+                onClick={() => onSelectPlan(plan)}
+                className='w-full py-3 px-4 rounded-lg font-bold transition-colors'
               >
-                {plan.cta}
+                {plan.price === 0 ? 'Começar Grátis' : 'Assinar'}
               </button>
             </div>
           ))}
