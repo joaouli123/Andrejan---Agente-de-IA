@@ -1,6 +1,7 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../services/supabase';
+import { RAG_SERVER_URL, ragHeaders } from '../../services/ragApi';
 import { Brand, Model, SourceFile } from '../../types';
 import { Upload, FileText, Trash2, ExternalLink, RefreshCw, CheckCircle, XCircle, Loader2 } from 'lucide-react';
 
@@ -27,6 +28,9 @@ export default function FileManager() {
   // File Input
   const [filesToUpload, setFilesToUpload] = useState<File[]>([]);
   const [customTitle, setCustomTitle] = useState('');
+  const [checkingDuplicates, setCheckingDuplicates] = useState(false);
+  const [duplicateFiles, setDuplicateFiles] = useState<Set<string>>(new Set());
+  const progressScrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     loadBrands();
@@ -70,6 +74,55 @@ export default function FileManager() {
       newStatuses[index] = { ...newStatuses[index], ...update };
       return newStatuses;
     });
+    // Preservar scroll position após re-render
+    requestAnimationFrame(() => {
+      const el = progressScrollRef.current;
+      if (el && (el as any)._userScrollPos !== undefined) {
+        el.scrollTop = (el as any)._userScrollPos;
+      }
+    });
+  }
+
+  // Verificar duplicatas quando arquivos são selecionados
+  async function checkDuplicates(files: File[]) {
+    if (files.length === 0) return;
+    setCheckingDuplicates(true);
+    const dupes = new Set<string>();
+    
+    // 1. Verificar no servidor (vector store + disco)
+    try {
+      const res = await fetch(`${RAG_SERVER_URL}/api/check-duplicates`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...ragHeaders(true) },
+        body: JSON.stringify({ fileNames: files.map(f => f.name) })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        (data.duplicates || []).forEach((d: string) => dupes.add(d));
+      }
+    } catch (err) {
+      console.warn('Erro ao verificar duplicatas no servidor:', err);
+    }
+    
+    // 2. Fallback: verificar no Supabase (source_files)
+    try {
+      const titles = files.map(f => f.name.replace('.pdf', ''));
+      const { data: existing } = await supabase
+        .from('source_files')
+        .select('title')
+        .in('title', titles);
+      if (existing && existing.length > 0) {
+        existing.forEach((e: any) => {
+          const match = files.find(f => f.name.replace('.pdf', '') === e.title);
+          if (match) dupes.add(match.name);
+        });
+      }
+    } catch (err) {
+      console.warn('Erro ao verificar duplicatas no Supabase:', err);
+    }
+    
+    setDuplicateFiles(dupes);
+    setCheckingDuplicates(false);
   }
 
   async function handleUpload() {
@@ -77,11 +130,20 @@ export default function FileManager() {
 
     setUploading(true);
     
+    // Filtrar duplicatas
+    const filesToProcess = filesToUpload.filter(f => !duplicateFiles.has(f.name));
+    if (filesToProcess.length === 0) {
+      setUploading(false);
+      return;
+    }
+    
     // Inicializar status de cada arquivo
-    const initialStatuses: UploadStatus[] = filesToUpload.map(f => ({
-      fileName: f.name,
-      status: 'waiting'
-    }));
+    const initialStatuses: UploadStatus[] = filesToUpload.map(f => {
+      if (duplicateFiles.has(f.name)) {
+        return { fileName: f.name, status: 'done' as const, message: '⏭️ Já indexado, ignorado' };
+      }
+      return { fileName: f.name, status: 'waiting' as const };
+    });
     setUploadStatuses(initialStatuses);
 
     let successCount = 0;
@@ -89,6 +151,8 @@ export default function FileManager() {
 
     for (let i = 0; i < filesToUpload.length; i++) {
       const file = filesToUpload[i];
+      // Pular duplicatas
+      if (duplicateFiles.has(file.name)) continue;
 
       try {
         // Fase 1: Enviando arquivo
@@ -96,9 +160,15 @@ export default function FileManager() {
 
         const formData = new FormData();
         formData.append('pdf', file);
+        // Enviar nome da marca para tagear vetores
+        const brand = brands.find(b => b.id === selectedBrand);
+        if (brand) {
+          formData.append('brandName', brand.name);
+        }
 
-        const uploadResponse = await fetch('http://localhost:3002/api/upload', {
+        const uploadResponse = await fetch(`${RAG_SERVER_URL}/api/upload`, {
           method: 'POST',
+          headers: { ...ragHeaders(true) },
           body: formData
         });
 
@@ -110,6 +180,14 @@ export default function FileManager() {
         }
 
         const uploadResult = await uploadResponse.json();
+        
+        // Detecção de duplicata server-side
+        if (uploadResult.skipped) {
+          updateFileStatus(i, { status: 'done', message: '⏭️ Já indexado no servidor, ignorado' });
+          successCount++;
+          continue;
+        }
+
         const taskId = uploadResult.taskId;
 
         if (!taskId) {
@@ -139,7 +217,7 @@ export default function FileManager() {
           continue;
         }
 
-        // Fase 3: Salvando referência no Supabase
+        // Fase 3: Salvando referência no Supabase (verifica se já existe)
         updateFileStatus(i, { status: 'saving', message: 'Registrando no banco de dados...' });
 
         const localPath = `server/data/pdfs/${file.name}`;
@@ -147,17 +225,26 @@ export default function FileManager() {
             ? customTitle 
             : file.name.replace('.pdf', '');
 
-        const { error: dbError } = await supabase.from('source_files').insert([{
-          brand_id: selectedBrand,
-          model_id: selectedModel || null,
-          title: fileTitle,
-          url: localPath,
-          file_size: file.size,
-          status: 'indexed'
-        }]);
+        const { data: existing } = await supabase
+          .from('source_files')
+          .select('id')
+          .eq('brand_id', selectedBrand)
+          .eq('title', fileTitle)
+          .limit(1);
 
-        if (dbError) {
-          console.error(`Erro db ${file.name}:`, dbError);
+        if (!existing || existing.length === 0) {
+          const { error: dbError } = await supabase.from('source_files').insert([{
+            brand_id: selectedBrand,
+            model_id: selectedModel || null,
+            title: fileTitle,
+            url: localPath,
+            file_size: file.size,
+            status: 'indexed'
+          }]);
+
+          if (dbError) {
+            console.error(`Erro db ${file.name}:`, dbError);
+          }
         }
 
         updateFileStatus(i, { 
@@ -195,7 +282,9 @@ export default function FileManager() {
     
     while (attempts < maxAttempts) {
       try {
-        const res = await fetch(`http://localhost:3002/api/upload/status/${taskId}`);
+        const res = await fetch(`${RAG_SERVER_URL}/api/upload/status/${taskId}`, {
+          headers: { ...ragHeaders(true) }
+        });
         const task = await res.json();
         
         if (task.status === 'done' || task.status === 'error' || task.status === 'not_found') {
@@ -265,7 +354,12 @@ export default function FileManager() {
                         accept=".pdf"
                         multiple // ENABLE BULK
                         className="absolute inset-0 opacity-0 cursor-pointer"
-                        onChange={e => setFilesToUpload(Array.from(e.target.files || []))}
+                        onChange={e => {
+                            const files = Array.from(e.target.files || []);
+                            setFilesToUpload(files);
+                            setDuplicateFiles(new Set());
+                            checkDuplicates(files);
+                        }}
                     />
                     <Upload size={40} className="mb-3 text-slate-400" />
                     <p className="font-semibold text-slate-700">Clique para selecionar ou arraste os arquivos</p>
@@ -293,27 +387,45 @@ export default function FileManager() {
                     )}
 
                     <ul className="text-sm text-slate-600 space-y-2 max-h-40 overflow-y-auto">
-                        {filesToUpload.map((f, i) => (
-                            <li key={i} className="flex items-center gap-2 p-2 bg-slate-50 rounded-lg">
-                                <FileText size={16} className="text-red-600" /> 
-                                <span className="font-medium">{f.name}</span> 
+                        {filesToUpload.map((f, i) => {
+                            const isDuplicate = duplicateFiles.has(f.name);
+                            return (
+                            <li key={i} className={`flex items-center gap-2 p-2 bg-slate-50 rounded-lg ${isDuplicate ? 'opacity-50' : ''}`}>
+                                <FileText size={16} className={isDuplicate ? 'text-yellow-500' : 'text-red-600'} /> 
+                                <span className="font-medium">{f.name}</span>
+                                {isDuplicate && <span className="text-xs bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded font-medium whitespace-nowrap">Já indexado</span>}
                                 <span className="text-xs text-slate-400 ml-auto">({(f.size / 1024 / 1024).toFixed(2)} MB)</span>
                             </li>
-                        ))}
+                            );
+                        })}
                     </ul>
                 </div>
             )}
 
             {/* Upload Progress Panel */}
             {uploadStatuses.length > 0 && (
-                <div className="mb-6 bg-white border-2 border-blue-300 rounded-xl p-4 space-y-3">
+                <div className="mb-6 bg-white border-2 border-blue-300 rounded-xl p-4">
                     <p className="text-sm font-bold text-slate-800 mb-2">
                         Progresso do Upload
                         {uploading && <span className="ml-2 text-blue-600 font-normal animate-pulse">Processando...</span>}
                     </p>
                     
-                    {uploadStatuses.map((s, i) => (
-                        <div key={i} className={`flex items-start gap-3 p-3 rounded-lg border transition-all ${
+                    <div
+                        ref={progressScrollRef}
+                        className="space-y-3 max-h-[50vh] overflow-y-auto pr-1"
+                        onScroll={(e) => {
+                            const el = e.currentTarget;
+                            (el as any)._userScrollPos = el.scrollTop;
+                        }}
+                    >
+                    {[...uploadStatuses]
+                        .map((s, i) => ({ ...s, originalIndex: i }))
+                        .sort((a, b) => {
+                            const order: Record<string, number> = { processing: 0, saving: 0, uploading: 1, waiting: 2, error: 3, done: 4 };
+                            return (order[a.status] ?? 5) - (order[b.status] ?? 5);
+                        })
+                        .map((s) => (
+                        <div key={s.originalIndex} className={`flex items-start gap-3 p-3 rounded-lg border transition-all ${
                             s.status === 'done' ? 'bg-green-50 border-green-200' :
                             s.status === 'error' ? 'bg-red-50 border-red-200' :
                             s.status === 'waiting' ? 'bg-slate-50 border-slate-200' :
@@ -343,12 +455,13 @@ export default function FileManager() {
                             </div>
                         </div>
                     ))}
+                    </div>
                 </div>
             )}
 
             <button 
                 onClick={handleUpload}
-                disabled={uploading || filesToUpload.length === 0 || !selectedBrand}
+                disabled={uploading || filesToUpload.length === 0 || !selectedBrand || checkingDuplicates || filesToUpload.every(f => duplicateFiles.has(f.name))}
                 className="w-full bg-blue-600 text-white py-3.5 rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-semibold shadow-md transition-all flex items-center justify-center gap-2"
             >
                 {uploading ? (
@@ -356,10 +469,18 @@ export default function FileManager() {
                         <Loader2 size={20} className="animate-spin" />
                         Processando... (não feche a página)
                     </>
+                ) : checkingDuplicates ? (
+                    <>
+                        <Loader2 size={20} className="animate-spin" />
+                        Verificando duplicados...
+                    </>
                 ) : (
                     <>
                         <Upload size={20} />
-                        {`Fazer Upload ${filesToUpload.length > 0 ? `de ${filesToUpload.length} Arquivo${filesToUpload.length > 1 ? 's' : ''}` : ''}`}
+                        {duplicateFiles.size > 0 
+                          ? `Fazer Upload (${filesToUpload.length - duplicateFiles.size} novos, ${duplicateFiles.size} ignorados)` 
+                          : `Fazer Upload ${filesToUpload.length > 0 ? `de ${filesToUpload.length} Arquivo${filesToUpload.length > 1 ? 's' : ''}` : ''}`
+                        }
                     </>
                 )}
             </button>

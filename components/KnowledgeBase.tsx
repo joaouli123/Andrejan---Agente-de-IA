@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { RAG_SERVER_URL, ragHeaders } from '../services/ragApi';
 import { 
   Upload, 
   FileText, 
@@ -16,8 +17,6 @@ import {
   FolderOpen,
   HardDrive
 } from 'lucide-react';
-
-const RAG_SERVER_URL = 'http://localhost:3002';
 
 interface PDFDocument {
   name: string;
@@ -63,13 +62,17 @@ const KnowledgeBase: React.FC = () => {
 
     try {
       // Carrega estatísticas
-      const statsRes = await fetch(`${RAG_SERVER_URL}/api/stats`);
+      const statsRes = await fetch(`${RAG_SERVER_URL}/api/stats`, {
+        headers: { ...ragHeaders() }
+      });
       if (statsRes.ok) {
         setStats(await statsRes.json());
       }
 
       // Carrega lista de documentos
-      const docsRes = await fetch(`${RAG_SERVER_URL}/api/documents`);
+      const docsRes = await fetch(`${RAG_SERVER_URL}/api/documents`, {
+        headers: { ...ragHeaders() }
+      });
       if (docsRes.ok) {
         setDocuments(await docsRes.json());
       }
@@ -102,6 +105,7 @@ const KnowledgeBase: React.FC = () => {
       try {
         const response = await fetch(`${RAG_SERVER_URL}/api/upload`, {
           method: 'POST',
+          headers: { ...ragHeaders(true) },
           body: formData
         });
 
@@ -131,7 +135,8 @@ const KnowledgeBase: React.FC = () => {
 
     try {
       const response = await fetch(`${RAG_SERVER_URL}/api/clear`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: { ...ragHeaders(true) }
       });
 
       if (response.ok) {

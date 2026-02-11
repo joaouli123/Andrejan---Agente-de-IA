@@ -13,13 +13,34 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // Modelo de embedding atual do Google (fev 2026)
 const embeddingModel = genAI.getGenerativeModel({ model: 'gemini-embedding-001' });
 
+// --- LRU Cache para embeddings de queries ---
+const embeddingCache = new Map();
+const EMBEDDING_CACHE_MAX = 100;
+
 /**
- * Gera embedding para um texto
+ * Gera embedding para um texto (com cache LRU)
  */
 export async function generateEmbedding(text) {
+  // Cache key: primeiros 300 chars normalizados
+  const cacheKey = text.trim().toLowerCase().substring(0, 300);
+  
+  if (embeddingCache.has(cacheKey)) {
+    console.log('📦 Embedding do cache');
+    return embeddingCache.get(cacheKey);
+  }
+  
   try {
     const result = await embeddingModel.embedContent(text);
-    return result.embedding.values;
+    const embedding = result.embedding.values;
+    
+    // LRU eviction
+    if (embeddingCache.size >= EMBEDDING_CACHE_MAX) {
+      const firstKey = embeddingCache.keys().next().value;
+      embeddingCache.delete(firstKey);
+    }
+    embeddingCache.set(cacheKey, embedding);
+    
+    return embedding;
   } catch (error) {
     console.error('Erro ao gerar embedding:', error);
     throw error;

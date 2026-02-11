@@ -1,9 +1,6 @@
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+import { RAG_SERVER_URL, ragHeaders } from './ragApi';
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
-// URL do servidor RAG
-const RAG_SERVER_URL = 'http://localhost:3002';
+// URL do servidor RAG (centralizada em ragApi.ts)
 
 // Interface para resposta do RAG
 interface RAGResponse {
@@ -29,7 +26,7 @@ export const queryRAG = async (
   try {
     const response = await fetch(`${RAG_SERVER_URL}/api/query`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...ragHeaders() },
       body: JSON.stringify({
         question,
         systemInstruction,
@@ -51,7 +48,7 @@ export const queryRAG = async (
 };
 
 /**
- * Verifica se o servidor RAG está disponível
+ * Verifica se o servidor RAG está disponível e retorna status de carregamento
  */
 export const isRAGAvailable = async (): Promise<boolean> => {
   try {
@@ -62,12 +59,25 @@ export const isRAGAvailable = async (): Promise<boolean> => {
   }
 };
 
+export const getRAGStatus = async (): Promise<{ available: boolean; loading: boolean; progress?: string }> => {
+  try {
+    const response = await fetch(`${RAG_SERVER_URL}/api/health`);
+    if (!response.ok) return { available: false, loading: false };
+    const data = await response.json();
+    return { available: true, loading: !!data.loading, progress: data.loadingProgress };
+  } catch {
+    return { available: false, loading: false };
+  }
+};
+
 /**
  * Obtém estatísticas do banco de conhecimento
  */
 export const getRAGStats = async (): Promise<{ totalDocuments: number } | null> => {
   try {
-    const response = await fetch(`${RAG_SERVER_URL}/api/stats`);
+    const response = await fetch(`${RAG_SERVER_URL}/api/stats`, {
+      headers: { ...ragHeaders() }
+    });
     if (!response.ok) return null;
     return await response.json();
   } catch {

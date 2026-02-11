@@ -25,9 +25,11 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ user, onAgentCreated }) => 
     const [name, setName] = useState('');
     const [role, setRole] = useState('');
     const [description, setDescription] = useState('');
-    const [instruction, setInstruction] = useState('');
     const [selectedIcon, setSelectedIcon] = useState('Bot');
     const [selectedBrand, setSelectedBrand] = useState('');
+
+    // Instrução padrão interna — usada para TODOS os agentes
+    const DEFAULT_INSTRUCTION = 'Você é um assistente técnico especializado em elevadores. Responda APENAS com base nos documentos da base de conhecimento. Seja direto, técnico e preciso. Nunca invente informações.';
 
     // Load brands from Supabase
     useEffect(() => {
@@ -48,7 +50,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ user, onAgentCreated }) => 
             description,
             icon: selectedIcon,
             color: 'blue',
-            systemInstruction: instruction,
+            systemInstruction: DEFAULT_INSTRUCTION,
             brandName: selectedBrand || undefined,
             isCustom: true,
             createdBy: user.id
@@ -73,7 +75,6 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ user, onAgentCreated }) => 
         setName('');
         setRole('');
         setDescription('');
-        setInstruction('');
         setSelectedIcon('Bot');
         setSelectedBrand('');
     };
@@ -168,24 +169,6 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ user, onAgentCreated }) => 
                                             <option key={b.id} value={b.name}>{b.name}</option>
                                         ))}
                                     </select>
-                                </div>
-
-                                <div>
-                                    <label className="block text-sm font-bold text-slate-700 mb-2 flex items-center justify-between">
-                                        <span>Instrução de Sistema (O Cérebro)</span>
-                                        <span className="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded">Segredo da IA</span>
-                                    </label>
-                                    <p className="text-xs text-slate-500 mb-2">
-                                        Aqui você "alimenta" a IA. Cole manuais, descreva comportamentos ou defina regras estritas.
-                                    </p>
-                                    <textarea 
-                                        required
-                                        value={instruction}
-                                        onChange={e => setInstruction(e.target.value)}
-                                        rows={6}
-                                        placeholder="Você é um especialista na linha Schindler 3300. Seus conhecimentos incluem..."
-                                        className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none font-mono text-sm bg-slate-50"
-                                    />
                                 </div>
 
                                 <div className="pt-4 border-t border-slate-100 flex justify-end gap-3">
@@ -295,10 +278,12 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ user, onAgentCreated }) => 
                                 )}
                                 <p className="text-sm text-slate-600 line-clamp-2 mb-4">{agent.description}</p>
                                 
-                                <div className="flex items-center text-xs text-slate-400 gap-1 bg-slate-50 p-2 rounded-lg border border-slate-100">
-                                    <Terminal size={12} />
-                                    <span className="truncate flex-1 font-mono">{agent.systemInstruction.substring(0, 30)}...</span>
-                                </div>
+                                {agent.brandName && (
+                                    <div className="flex items-center text-xs text-blue-600 gap-1 bg-blue-50 p-2 rounded-lg border border-blue-100">
+                                        <BookOpen size={12} />
+                                        <span className="truncate flex-1 font-medium">Base: {agent.brandName}</span>
+                                    </div>
+                                )}
                             </div>
                         )
                     })}

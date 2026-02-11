@@ -30,158 +30,247 @@ async function getTesseractWorker() {
 }
 
 /**
+ * Tenta pdfParse com proteção contra crashes
+ */
+async function safePdfParse(dataBuffer) {
+  try {
+    const data = await pdfParse(dataBuffer, {
+      // Opções defensivas para PDFs problemáticos
+      max: 0, // sem limite de páginas
+    });
+    return data;
+  } catch (error) {
+    console.warn(`   ⚠️ pdf-parse falhou: ${error.message}`);
+    return null;
+  }
+}
+
+/**
  * Extrai texto de um arquivo PDF (texto puro via pdf-parse)
  */
 export async function extractTextFromPDF(filePath) {
   try {
     const dataBuffer = fs.readFileSync(filePath);
-    const data = await pdfParse(dataBuffer);
+    const data = await safePdfParse(dataBuffer);
+    
+    if (!data) {
+      return { text: '', numPages: 0, info: {}, metadata: {} };
+    }
     
     return {
       text: data.text,
       numPages: data.numpages,
-      info: data.info,
-      metadata: data.metadata
+      info: data.info || {},
+      metadata: data.metadata || {}
     };
   } catch (error) {
     console.error(`Erro ao extrair texto de ${filePath}:`, error);
-    throw error;
+    return { text: '', numPages: 0, info: {}, metadata: {} };
   }
 }
 
 /**
  * Extrai texto de um PDF usando OCR nas páginas que têm pouco texto
  * Combina pdf-parse (texto) + Tesseract (OCR para imagens/scans)
+ * 
+ * Robusto: se pdf-parse falhar, tenta OCR puro.
+ * Se OCR falhar, usa o que conseguiu do pdf-parse.
  */
 export async function extractTextWithOCR(filePath, onProgress) {
-  const dataBuffer = fs.readFileSync(filePath);
+  let dataBuffer;
+  try {
+    dataBuffer = fs.readFileSync(filePath);
+  } catch (readErr) {
+    console.error(`   ❌ Não foi possível ler o arquivo: ${readErr.message}`);
+    throw new Error(`Arquivo não encontrado ou sem permissão: ${readErr.message}`);
+  }
+
+  if (!dataBuffer || dataBuffer.length === 0) {
+    throw new Error('Arquivo PDF vazio (0 bytes)');
+  }
+
+  // 1. Tenta extrair texto com pdf-parse (protegido)
+  const pdfData = await safePdfParse(dataBuffer);
   
-  // 1. Tenta extrair texto normalmente primeiro
-  const pdfData = await pdfParse(dataBuffer);
-  const numPages = pdfData.numpages;
+  let parsedText = '';
+  let numPages = 0;
+  let info = {};
+  let metadata = {};
+
+  if (pdfData) {
+    parsedText = pdfData.text || '';
+    numPages = pdfData.numpages || 0;
+    info = pdfData.info || {};
+    metadata = pdfData.metadata || {};
+  }
   
-  // 2. Verifica se o PDF tem texto suficiente ou se parece ser scan
-  const avgCharsPerPage = pdfData.text.length / numPages;
-  const needsOCR = avgCharsPerPage < OCR_TEXT_THRESHOLD;
+  // 2. Verifica se o texto é suficiente
+  const avgCharsPerPage = numPages > 0 ? parsedText.length / numPages : 0;
+  const hasGoodText = parsedText.trim().length > 200 && avgCharsPerPage >= OCR_TEXT_THRESHOLD;
   
-  if (!needsOCR && pdfData.text.trim().length > 200) {
-    // Texto suficiente, não precisa OCR
-    if (onProgress) onProgress({ phase: 'text', message: `Texto extraído normalmente (${pdfData.text.length} chars)` });
+  if (hasGoodText) {
+    if (onProgress) onProgress({ phase: 'text', message: `Texto extraído normalmente (${parsedText.length} chars)` });
     return {
-      text: pdfData.text,
+      text: parsedText,
       numPages,
-      info: pdfData.info,
-      metadata: pdfData.metadata,
+      info,
+      metadata,
       ocrUsed: false
     };
   }
   
-  // 3. PDF parece ser scan/imagem - usar OCR
-  console.log(`   🔍 PDF com pouco texto (${Math.round(avgCharsPerPage)} chars/pág) - ativando OCR...`);
+  // 3. PDF sem texto suficiente ou pdf-parse falhou — tentar OCR
+  const reason = !pdfData ? 'pdf-parse falhou completamente' : `pouco texto (${Math.round(avgCharsPerPage)} chars/pág)`;
+  console.log(`   🔍 ${reason} — ativando OCR...`);
   if (onProgress) onProgress({ phase: 'ocr_start', message: 'PDF com imagens detectado, iniciando OCR...' });
   
   let ocrText = '';
+  let ocrPages = 0;
   
   try {
-    // Importa pdf-to-img dinamicamente
     const { pdf } = await import('pdf-to-img');
     const worker = await getTesseractWorker();
     
     let pageNum = 0;
+    let pdfIterator;
     
-    // Converte cada página para imagem e faz OCR
-    for await (const pageImage of await pdf(dataBuffer, { scale: 2.0 })) {
+    try {
+      pdfIterator = await pdf(dataBuffer, { scale: 2.0 });
+    } catch (pdfImgErr) {
+      // Tentar com escala menor se a escala 2.0 falhar
+      console.log(`   ⚠️ pdf-to-img falhou com scale=2.0: ${pdfImgErr.message}`);
+      console.log(`   🔄 Tentando com scale=1.0...`);
+      try {
+        pdfIterator = await pdf(dataBuffer, { scale: 1.0 });
+      } catch (pdfImgErr2) {
+        throw new Error(`pdf-to-img não conseguiu processar: ${pdfImgErr2.message}`);
+      }
+    }
+    
+    for await (const pageImage of pdfIterator) {
       pageNum++;
       
       if (onProgress) {
         onProgress({ 
           phase: 'ocr', 
-          message: `OCR página ${pageNum}/${numPages}...`,
-          progress: Math.round((pageNum / numPages) * 100)
+          message: `OCR página ${pageNum}/${numPages || '?'}...`,
+          progress: numPages > 0 ? Math.round((pageNum / numPages) * 100) : 0
         });
       }
       
       try {
-        // pageImage é um Buffer PNG
         const result = await worker.recognize(pageImage);
         const pageText = result.data.text.trim();
         
         if (pageText.length > 10) {
           ocrText += `\n--- Página ${pageNum} ---\n${pageText}\n`;
+          ocrPages++;
         }
         
         if (pageNum % 10 === 0) {
-          console.log(`   📄 OCR: ${pageNum}/${numPages} páginas processadas`);
+          console.log(`   📄 OCR: ${pageNum}/${numPages || '?'} páginas processadas`);
         }
       } catch (ocrErr) {
-        console.warn(`   ⚠️ OCR falhou na página ${pageNum}:`, ocrErr.message);
+        console.warn(`   ⚠️ OCR falhou na página ${pageNum}: ${ocrErr.message}`);
       }
     }
     
-    console.log(`   ✅ OCR concluído: ${numPages} páginas, ${ocrText.length} chars extraídos`);
+    // Se pdf-parse não detectou páginas, usa o que o OCR contou
+    if (numPages === 0) numPages = pageNum;
+    
+    console.log(`   ✅ OCR concluído: ${ocrPages}/${pageNum} páginas com texto, ${ocrText.length} chars`);
     
   } catch (ocrError) {
     console.error('   ❌ Erro no OCR pipeline:', ocrError.message);
-    // Fallback: usa o texto que conseguiu extrair normalmente
-    if (pdfData.text.trim().length > 0) {
-      console.log('   ↩️ Usando texto parcial do pdf-parse como fallback');
-      ocrText = pdfData.text;
+    // Se temos algum texto do pdf-parse, usamos como fallback
+    if (parsedText.trim().length > 0) {
+      console.log(`   ↩️ Fallback: usando ${parsedText.length} chars do pdf-parse`);
     }
   }
   
-  // Combina: texto do pdf-parse + texto do OCR
-  const combinedText = (pdfData.text.trim() + '\n\n' + ocrText.trim()).trim();
+  // 4. Combina texto disponível
+  const combinedText = [parsedText.trim(), ocrText.trim()].filter(Boolean).join('\n\n').trim();
+  
+  if (!combinedText || combinedText.length < 20) {
+    throw new Error(`Não foi possível extrair texto do PDF (${combinedText.length} chars). Arquivo pode estar corrompido ou protegido.`);
+  }
   
   return {
     text: combinedText,
-    numPages,
-    info: pdfData.info,
-    metadata: pdfData.metadata,
-    ocrUsed: true,
+    numPages: numPages || 1,
+    info,
+    metadata,
+    ocrUsed: ocrText.length > 0,
     ocrChars: ocrText.length
   };
 }
 
 /**
- * Divide o texto em chunks menores com overlap
+ * Divide texto em seções lógicas baseado em headers/marcadores
+ */
+function splitIntoSections(text) {
+  // Padrões de seção comuns em manuais técnicos
+  const sectionPattern = /\n(?=(?:\d+\.\d*\s+[A-ZÀ-Ü]|[A-ZÀ-Ü][A-ZÀ-Ü\s]{4,}\n|#{1,3}\s|--- Página \d+|CAPÍTULO|SEÇÃO|PARTE\s+\d))/gi;
+  
+  const sections = text.split(sectionPattern).filter(s => s.trim());
+  
+  // Se não encontrou seções, retorna o texto inteiro como uma seção
+  if (sections.length <= 1) return [text];
+  
+  return sections;
+}
+
+/**
+ * Divide o texto em chunks menores com overlap (respeitando seções)
  */
 export function splitTextIntoChunks(text, metadata = {}) {
   const chunks = [];
-  const sentences = text.split(/(?<=[.!?])\s+/);
-  
-  let currentChunk = '';
   let chunkIndex = 0;
   
-  for (const sentence of sentences) {
-    if ((currentChunk + sentence).length > CHUNK_SIZE && currentChunk.length > 0) {
+  // 1. Divide em seções lógicas primeiro
+  const sections = splitIntoSections(text);
+  
+  for (const section of sections) {
+    // 2. Se a seção cabe em um chunk, mantém inteira
+    if (section.length <= CHUNK_SIZE) {
+      if (section.trim()) {
+        chunks.push({
+          id: uuidv4(),
+          content: section.trim(),
+          metadata: { ...metadata, chunkIndex: chunkIndex++ }
+        });
+      }
+      continue;
+    }
+    
+    // 3. Seção grande: divide por sentenças com overlap
+    const sentences = section.split(/(?<=[.!?])\s+/);
+    let currentChunk = '';
+    
+    for (const sentence of sentences) {
+      if ((currentChunk + sentence).length > CHUNK_SIZE && currentChunk.length > 0) {
+        chunks.push({
+          id: uuidv4(),
+          content: currentChunk.trim(),
+          metadata: { ...metadata, chunkIndex: chunkIndex++ }
+        });
+        
+        // Overlap: mantém os últimos CHUNK_OVERLAP caracteres
+        const overlapStart = Math.max(0, currentChunk.length - CHUNK_OVERLAP);
+        currentChunk = currentChunk.substring(overlapStart) + ' ' + sentence;
+      } else {
+        currentChunk += (currentChunk ? ' ' : '') + sentence;
+      }
+    }
+    
+    // Adiciona o último chunk da seção
+    if (currentChunk.trim()) {
       chunks.push({
         id: uuidv4(),
         content: currentChunk.trim(),
-        metadata: {
-          ...metadata,
-          chunkIndex: chunkIndex++
-        }
+        metadata: { ...metadata, chunkIndex: chunkIndex++ }
       });
-      
-      // Mantém overlap pegando as últimas palavras
-      const words = currentChunk.split(' ');
-      const overlapWords = words.slice(-Math.floor(CHUNK_OVERLAP / 5));
-      currentChunk = overlapWords.join(' ') + ' ' + sentence;
-    } else {
-      currentChunk += (currentChunk ? ' ' : '') + sentence;
     }
-  }
-  
-  // Adiciona o último chunk
-  if (currentChunk.trim()) {
-    chunks.push({
-      id: uuidv4(),
-      content: currentChunk.trim(),
-      metadata: {
-        ...metadata,
-        chunkIndex: chunkIndex
-      }
-    });
   }
   
   return chunks;

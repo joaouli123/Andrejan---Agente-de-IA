@@ -19,9 +19,18 @@ const model = genAI.getGenerativeModel({
     temperature: 0,      // Zero criatividade - respostas determinísticas
     topP: 0.1,           // Foco nas respostas mais prováveis
     topK: 1,             // Sempre escolhe a melhor resposta
-    maxOutputTokens: 2048
+    maxOutputTokens: 4096 // Permite respostas mais longas (procedimentos detalhados)
   }
 });
+
+// --- Cache de respostas com TTL ---
+const responseCache = new Map();
+const RESPONSE_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
+const RESPONSE_CACHE_MAX = 50;
+
+function getResponseCacheKey(question, brandFilter) {
+  return `${(question || '').trim().toLowerCase().substring(0, 200)}|${brandFilter || ''}`;
+}
 
 /**
  * Realiza busca RAG completa: busca contexto relevante e gera resposta
@@ -34,7 +43,15 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
   const startTime = Date.now();
   
   // Similaridade mínima para considerar um documento relevante
-  const MIN_SIMILARITY = 0.60;
+  const MIN_SIMILARITY = 0.65;
+
+  // Verifica cache de respostas
+  const cacheKey = getResponseCacheKey(question, brandFilter);
+  const cached = responseCache.get(cacheKey);
+  if (cached && (Date.now() - cached.timestamp < RESPONSE_CACHE_TTL)) {
+    console.log('📦 Resposta do cache (TTL 5min)');
+    return { ...cached.response, fromCache: true, searchTime: 0 };
+  }
   
   try {
     // 1. Gera embedding da pergunta
@@ -138,7 +155,7 @@ ${context}
     const endTime = Date.now();
     
     // 6. Retorna resposta formatada com metadados
-    return {
+    const response = {
       answer,
       sources: relevantDocs.map(doc => ({
         source: doc.metadata?.source || 'Desconhecido',
@@ -149,6 +166,15 @@ ${context}
       searchTime: endTime - startTime,
       documentsFound: relevantDocs.length
     };
+
+    // Salva no cache
+    if (responseCache.size >= RESPONSE_CACHE_MAX) {
+      const firstKey = responseCache.keys().next().value;
+      responseCache.delete(firstKey);
+    }
+    responseCache.set(cacheKey, { response, timestamp: Date.now() });
+
+    return response;
     
   } catch (error) {
     console.error('Erro no RAG:', error);

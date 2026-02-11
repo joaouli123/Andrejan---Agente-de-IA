@@ -89,29 +89,18 @@ export const AgentsGrid: React.FC<{ user: UserProfile, onSelectAgent: (id: strin
           <p className="text-slate-500 mt-1 sm:mt-2 text-sm sm:text-lg max-w-2xl">Central de Diagnóstico: Selecione o módulo especializado para iniciar o atendimento.</p>
         </div>
 
-        {/* System Agents */}
-        <div className="mb-8 sm:mb-12">
+        {/* Especialistas da Empresa */}
+        {customAgents.length > 0 && (
+          <div className="mb-8">
             <h3 className="text-xs sm:text-sm font-bold text-slate-400 uppercase tracking-wider mb-3 sm:mb-4 flex items-center">
-                <BrainCircuit className="w-4 h-4 mr-2" /> Módulos Nativos do Sistema
+                <Rocket className="w-4 h-4 mr-2" /> Especialistas da Empresa
             </h3>
             <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-6 lg:gap-8">
-                {systemAgents.map(agent => <AgentCard key={agent.id} agent={agent} onSelect={onSelectAgent} />)}
+                {customAgents.map(agent => <AgentCard key={agent.id} agent={agent} onSelect={onSelectAgent} />)}
             </div>
-        </div>
+          </div>
+        )}
 
-        {/* Custom Agents (Created by Admin) */}
-        <div className="mb-12">
-            {customAgents.length > 0 && (
-              <>
-                <h3 className="text-xs sm:text-sm font-bold text-slate-400 uppercase tracking-wider mb-3 sm:mb-4 flex items-center">
-                    <Rocket className="w-4 h-4 mr-2" /> Especialistas da Empresa
-                </h3>
-                <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-6 lg:gap-8">
-                    {customAgents.map(agent => <AgentCard key={agent.id} agent={agent} onSelect={onSelectAgent} />)}
-                </div>
-              </>
-            )}
-        </div>
       </div>
     </div>
   );
@@ -361,47 +350,6 @@ export const FinancialView: React.FC<{ user: UserProfile }> = ({ user }) => {
             <button className="mt-4 w-full py-2.5 border border-slate-200 rounded-lg text-sm font-medium hover:bg-slate-50 text-slate-600 transition-colors">
                 Alterar Plano
             </button>
-          </div>
-        </div>
-
-        {/* Subscription Details */}
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm mb-6 sm:mb-8 overflow-hidden">
-          <div className="px-4 sm:px-6 py-4 border-b border-slate-100 bg-slate-50/50">
-            <h3 className="font-bold text-slate-800 text-sm sm:text-base flex items-center gap-2">
-              <Calendar size={16} className="text-blue-600" /> Detalhes da Assinatura
-            </h3>
-          </div>
-          <div className="p-4 sm:p-6">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl">
-                <div className="p-2 bg-blue-100 rounded-lg"><Calendar size={16} className="text-blue-600" /></div>
-                <div>
-                  <p className="text-[10px] sm:text-xs font-bold text-slate-400 uppercase">Início da Assinatura</p>
-                  <p className="text-sm font-semibold text-slate-800">{new Date(user.joinedAt).toLocaleDateString('pt-BR')}</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl">
-                <div className="p-2 bg-green-100 rounded-lg"><CheckCircle2 size={16} className="text-green-600" /></div>
-                <div>
-                  <p className="text-[10px] sm:text-xs font-bold text-slate-400 uppercase">Status</p>
-                  <p className="text-sm font-semibold text-green-700">Ativo</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl">
-                <div className="p-2 bg-purple-100 rounded-lg"><CreditCard size={16} className="text-purple-600" /></div>
-                <div>
-                  <p className="text-[10px] sm:text-xs font-bold text-slate-400 uppercase">Método de Pagamento</p>
-                  <p className="text-sm font-semibold text-slate-800">Cartão •••• 4521</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl">
-                <div className="p-2 bg-amber-100 rounded-lg"><Clock size={16} className="text-amber-600" /></div>
-                <div>
-                  <p className="text-[10px] sm:text-xs font-bold text-slate-400 uppercase">Ciclo de Cobrança</p>
-                  <p className="text-sm font-semibold text-slate-800">Mensal (Dia 10)</p>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
 
@@ -655,8 +603,6 @@ export const ProfileView: React.FC<{ user: UserProfile }> = ({ user }) => {
     Storage.updateUserProfile(updates);
     alert('Perfil atualizado com sucesso!');
     setIsEditing(false);
-    
-    // Recarregar página para atualizar dados
     window.location.reload();
   };
 
@@ -669,309 +615,189 @@ export const ProfileView: React.FC<{ user: UserProfile }> = ({ user }) => {
       alert('A senha deve ter no mínimo 6 caracteres!');
       return;
     }
-    // TODO: Validar senha atual e salvar nova senha
     alert('Senha alterada com sucesso!');
     setShowPasswordModal(false);
     setPasswords({ current: '', new: '', confirm: '' });
   };
 
+  const inputClass = "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all disabled:bg-slate-50 disabled:text-slate-500";
+
   return (
     <div className="h-full overflow-y-auto p-4 sm:p-6 lg:p-12 bg-slate-50">
-      <div className="max-w-5xl mx-auto">
+      <div className="max-w-3xl mx-auto pb-12">
         
-        {/* Header com Avatar */}
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-6 mb-4 sm:mb-6">
-          <div className="flex flex-col sm:flex-row items-center sm:items-start sm:justify-between gap-6">
-            {/* Avatar com Upload */}
-            <div className="relative flex-shrink-0">
-              <div className="w-24 h-24 rounded-2xl bg-white shadow-lg overflow-hidden">
-                {avatarPreview ? (
-                  <img src={avatarPreview} alt="Avatar" className="w-full h-full rounded-2xl object-cover" />
-                ) : (
-                  <div className="w-full h-full rounded-2xl bg-gradient-to-br from-blue-600 to-cyan-500 flex items-center justify-center text-3xl font-bold text-white">
-                    {user.name.charAt(0)}
-                  </div>
-                )}
-              </div>
-              {isEditing && (
-                <label className="absolute -bottom-2 -right-2 w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center cursor-pointer hover:bg-blue-700 transition-colors shadow-lg border-4 border-white">
-                  <Upload className="text-white" size={18} />
-                  <input 
-                    type="file" 
-                    accept="image/*" 
-                    onChange={handleAvatarChange}
-                    className="hidden"
-                  />
-                </label>
+        {/* Header */}
+        <div className="flex items-center justify-between mb-6">
+          <h1 className="text-xl sm:text-2xl font-bold text-slate-900 flex items-center gap-2">
+            <User size={22} className="text-slate-900" /> Meu Perfil
+          </h1>
+          <div className="flex gap-2">
+            {!isEditing ? (
+              <>
+                <button 
+                  onClick={() => setIsEditing(true)}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors font-medium"
+                >
+                  <Edit2 size={14} /> Editar
+                </button>
+                <button 
+                  onClick={() => setShowPasswordModal(true)}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-slate-100 text-slate-700 text-sm rounded-lg hover:bg-slate-200 transition-colors font-medium"
+                >
+                  <Lock size={14} /> Senha
+                </button>
+              </>
+            ) : (
+              <>
+                <button 
+                  onClick={handleSave}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 transition-colors font-medium"
+                >
+                  <Check size={14} /> Salvar
+                </button>
+                <button 
+                  onClick={() => setIsEditing(false)}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-slate-100 text-slate-700 text-sm rounded-lg hover:bg-slate-200 transition-colors font-medium"
+                >
+                  <X size={14} /> Cancelar
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Avatar + Info Card */}
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 mb-4 flex items-center gap-4">
+          <div className="relative flex-shrink-0">
+            <div className="w-14 h-14 rounded-xl overflow-hidden shadow-sm">
+              {avatarPreview ? (
+                <img src={avatarPreview} alt="Avatar" className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full bg-gradient-to-br from-blue-600 to-cyan-500 flex items-center justify-center text-xl font-bold text-white">
+                  {user.name.charAt(0)}
+                </div>
               )}
             </div>
-            
-            {/* Botões de Ação */}
-            <div className="flex flex-wrap gap-3 justify-center sm:justify-end">
-              {!isEditing ? (
-                <>
-                  <button 
-                    onClick={() => setIsEditing(true)}
-                    className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors font-medium shadow-sm"
-                  >
-                    <Edit2 size={18} /> Editar Perfil
-                  </button>
-                  <button 
-                    onClick={() => setShowPasswordModal(true)}
-                    className="flex items-center gap-2 px-6 py-3 bg-slate-100 text-slate-700 rounded-xl hover:bg-slate-200 transition-colors font-medium"
-                  >
-                    <Lock size={18} /> Alterar Senha
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button 
-                    onClick={handleSave}
-                    className="flex items-center gap-2 px-6 py-3 bg-green-600 text-white rounded-xl hover:bg-green-700 transition-colors font-medium shadow-sm"
-                  >
-                    <Check size={18} /> Salvar
-                  </button>
-                  <button 
-                    onClick={() => setIsEditing(false)}
-                    className="flex items-center gap-2 px-6 py-3 bg-slate-100 text-slate-700 rounded-xl hover:bg-slate-200 transition-colors font-medium"
-                  >
-                    <X size={18} /> Cancelar
-                  </button>
-                </>
-              )}
+            {isEditing && (
+              <label className="absolute -bottom-1 -right-1 w-7 h-7 bg-blue-600 rounded-full flex items-center justify-center cursor-pointer hover:bg-blue-700 transition-colors shadow border-2 border-white">
+                <Upload className="text-white" size={12} />
+                <input type="file" accept="image/*" onChange={handleAvatarChange} className="hidden" />
+              </label>
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-base font-bold text-slate-900 truncate">{user.name}</p>
+            <p className="text-xs text-slate-500 truncate">{user.email}</p>
+          </div>
+          <div className="flex-shrink-0">
+            <span className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider bg-blue-50 text-blue-600 border border-blue-200 rounded-full">
+              {user.plan}
+            </span>
+          </div>
+        </div>
+
+        {/* Dados Pessoais */}
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm mb-4">
+          <h2 className="text-sm font-bold text-slate-800 mb-3 flex items-center gap-1.5">
+            <User size={14} className="text-blue-600" /> Dados Pessoais
+          </h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">Nome Completo</label>
+              <input type="text" value={formData.name} onChange={(e) => setFormData({...formData, name: e.target.value})} disabled={!isEditing} className={inputClass} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">Email</label>
+              <input type="email" value={formData.email} onChange={(e) => setFormData({...formData, email: e.target.value})} disabled={!isEditing} className={inputClass} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">Telefone</label>
+              <input type="tel" value={formData.phone} onChange={(e) => setFormData({...formData, phone: e.target.value})} disabled={!isEditing} placeholder="(00) 00000-0000" className={inputClass} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">CPF</label>
+              <input type="text" value={formData.cpf} onChange={(e) => setFormData({...formData, cpf: e.target.value})} disabled={!isEditing} placeholder="000.000.000-00" className={inputClass} />
+            </div>
+            <div className="sm:col-span-2">
+              <label className="block text-xs font-medium text-slate-500 mb-1">Empresa</label>
+              <input type="text" value={formData.company} onChange={(e) => setFormData({...formData, company: e.target.value})} disabled={!isEditing} className={inputClass} />
             </div>
           </div>
         </div>
 
-        {/* Formulário de Dados */}
-        <div className="space-y-6">
-          
-          {/* Dados Pessoais */}
-          <div className="bg-white p-4 sm:p-8 rounded-2xl border border-slate-200 shadow-sm">
-              <h2 className="text-lg sm:text-xl font-bold text-slate-900 mb-4 sm:mb-6 flex items-center gap-2">
-                <User size={20} className="text-blue-600" />
-                Dados Pessoais
-              </h2>
-              
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">Nome Completo *</label>
-                  <input 
-                    type="text"
-                    value={formData.name}
-                    onChange={(e) => setFormData({...formData, name: e.target.value})}
-                    disabled={!isEditing}
-                    className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all disabled:bg-slate-50 disabled:text-slate-500"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">Email *</label>
-                  <input 
-                    type="email"
-                    value={formData.email}
-                    onChange={(e) => setFormData({...formData, email: e.target.value})}
-                    disabled={!isEditing}
-                    className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all disabled:bg-slate-50 disabled:text-slate-500"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">Telefone</label>
-                  <input 
-                    type="tel"
-                    value={formData.phone}
-                    onChange={(e) => setFormData({...formData, phone: e.target.value})}
-                    disabled={!isEditing}
-                    placeholder="(00) 00000-0000"
-                    className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all disabled:bg-slate-50 disabled:text-slate-500"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">CPF</label>
-                  <input 
-                    type="text"
-                    value={formData.cpf}
-                    onChange={(e) => setFormData({...formData, cpf: e.target.value})}
-                    disabled={!isEditing}
-                    placeholder="000.000.000-00"
-                    className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all disabled:bg-slate-50 disabled:text-slate-500"
-                  />
-                </div>
-                
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">Empresa</label>
-                  <input 
-                    type="text"
-                    value={formData.company}
-                    onChange={(e) => setFormData({...formData, company: e.target.value})}
-                    disabled={!isEditing}
-                    className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all disabled:bg-slate-50 disabled:text-slate-500"
-                  />
-                </div>
-              </div>
+        {/* Endereço */}
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+          <h2 className="text-sm font-bold text-slate-800 mb-3 flex items-center gap-1.5">
+            <MapPin size={14} className="text-blue-600" /> Endereço
+          </h2>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">CEP</label>
+              <input type="text" value={formData.zipCode} onChange={(e) => setFormData({...formData, zipCode: e.target.value})} disabled={!isEditing} placeholder="00000-000" className={inputClass} />
             </div>
-
-          {/* Endereço */}
-          <div className="bg-white p-4 sm:p-8 rounded-2xl border border-slate-200 shadow-sm">
-              <h2 className="text-lg sm:text-xl font-bold text-slate-900 mb-4 sm:mb-6 flex items-center gap-2">
-                <MapPin size={20} className="text-blue-600" />
-                Endereço
-              </h2>
-              
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">CEP</label>
-                  <input 
-                    type="text"
-                    value={formData.zipCode}
-                    onChange={(e) => setFormData({...formData, zipCode: e.target.value})}
-                    disabled={!isEditing}
-                    placeholder="00000-000"
-                    className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all disabled:bg-slate-50 disabled:text-slate-500"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">Cidade</label>
-                  <input 
-                    type="text"
-                    value={formData.city}
-                    onChange={(e) => setFormData({...formData, city: e.target.value})}
-                    disabled={!isEditing}
-                    className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all disabled:bg-slate-50 disabled:text-slate-500"
-                  />
-                </div>
-                
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">Rua/Avenida</label>
-                  <input 
-                    type="text"
-                    value={formData.street}
-                    onChange={(e) => setFormData({...formData, street: e.target.value})}
-                    disabled={!isEditing}
-                    className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all disabled:bg-slate-50 disabled:text-slate-500"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">Número</label>
-                  <input 
-                    type="text"
-                    value={formData.number}
-                    onChange={(e) => setFormData({...formData, number: e.target.value})}
-                    disabled={!isEditing}
-                    className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all disabled:bg-slate-50 disabled:text-slate-500"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">Complemento</label>
-                  <input 
-                    type="text"
-                    value={formData.complement}
-                    onChange={(e) => setFormData({...formData, complement: e.target.value})}
-                    disabled={!isEditing}
-                    placeholder="Apto, Sala, Bloco..."
-                    className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all disabled:bg-slate-50 disabled:text-slate-500"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">Bairro</label>
-                  <input 
-                    type="text"
-                    value={formData.neighborhood}
-                    onChange={(e) => setFormData({...formData, neighborhood: e.target.value})}
-                    disabled={!isEditing}
-                    className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all disabled:bg-slate-50 disabled:text-slate-500"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">Estado</label>
-                  <select 
-                    value={formData.state}
-                    onChange={(e) => setFormData({...formData, state: e.target.value})}
-                    disabled={!isEditing}
-                    className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all disabled:bg-slate-50 disabled:text-slate-500"
-                  >
-                    <option value="">Selecione...</option>
-                    <option value="SP">São Paulo</option>
-                    <option value="RJ">Rio de Janeiro</option>
-                    <option value="MG">Minas Gerais</option>
-                    <option value="ES">Espírito Santo</option>
-                    <option value="PR">Paraná</option>
-                    <option value="SC">Santa Catarina</option>
-                    <option value="RS">Rio Grande do Sul</option>
-                    <option value="BA">Bahia</option>
-                    <option value="PE">Pernambuco</option>
-                    <option value="CE">Ceará</option>
-                  </select>
-                </div>
-              </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">Cidade</label>
+              <input type="text" value={formData.city} onChange={(e) => setFormData({...formData, city: e.target.value})} disabled={!isEditing} className={inputClass} />
             </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">Estado</label>
+              <select value={formData.state} onChange={(e) => setFormData({...formData, state: e.target.value})} disabled={!isEditing} className={inputClass}>
+                <option value="">UF</option>
+                <option value="SP">SP</option><option value="RJ">RJ</option><option value="MG">MG</option>
+                <option value="ES">ES</option><option value="PR">PR</option><option value="SC">SC</option>
+                <option value="RS">RS</option><option value="BA">BA</option><option value="PE">PE</option>
+                <option value="CE">CE</option><option value="GO">GO</option><option value="DF">DF</option>
+              </select>
+            </div>
+            <div className="col-span-2">
+              <label className="block text-xs font-medium text-slate-500 mb-1">Rua/Avenida</label>
+              <input type="text" value={formData.street} onChange={(e) => setFormData({...formData, street: e.target.value})} disabled={!isEditing} className={inputClass} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">Número</label>
+              <input type="text" value={formData.number} onChange={(e) => setFormData({...formData, number: e.target.value})} disabled={!isEditing} className={inputClass} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">Complemento</label>
+              <input type="text" value={formData.complement} onChange={(e) => setFormData({...formData, complement: e.target.value})} disabled={!isEditing} placeholder="Apto, Sala..." className={inputClass} />
+            </div>
+            <div className="col-span-2 sm:col-span-1">
+              <label className="block text-xs font-medium text-slate-500 mb-1">Bairro</label>
+              <input type="text" value={formData.neighborhood} onChange={(e) => setFormData({...formData, neighborhood: e.target.value})} disabled={!isEditing} className={inputClass} />
+            </div>
+          </div>
         </div>
 
         {/* Modal de Troca de Senha */}
         {showPasswordModal && (
           <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowPasswordModal(false)}>
-            <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8" onClick={(e) => e.stopPropagation()}>
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
-                  <Lock size={24} className="text-blue-600" />
-                  Alterar Senha
+            <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full p-6" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                  <Lock size={18} className="text-blue-600" /> Alterar Senha
                 </h2>
-                <button onClick={() => setShowPasswordModal(false)} className="text-slate-400 hover:text-slate-600">
-                  <X size={24} />
-                </button>
+                <button onClick={() => setShowPasswordModal(false)} className="text-slate-400 hover:text-slate-600"><X size={20} /></button>
               </div>
-              
-              <div className="space-y-4">
+              <div className="space-y-3">
                 <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">Senha Atual *</label>
-                  <input 
-                    type="password"
-                    value={passwords.current}
-                    onChange={(e) => setPasswords({...passwords, current: e.target.value})}
-                    className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                  />
+                  <label className="block text-xs font-medium text-slate-500 mb-1">Senha Atual</label>
+                  <input type="password" value={passwords.current} onChange={(e) => setPasswords({...passwords, current: e.target.value})} className={inputClass} />
                 </div>
-                
                 <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">Nova Senha *</label>
-                  <input 
-                    type="password"
-                    value={passwords.new}
-                    onChange={(e) => setPasswords({...passwords, new: e.target.value})}
-                    className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                  />
-                  <p className="text-xs text-slate-500 mt-1">Mínimo de 6 caracteres</p>
+                  <label className="block text-xs font-medium text-slate-500 mb-1">Nova Senha</label>
+                  <input type="password" value={passwords.new} onChange={(e) => setPasswords({...passwords, new: e.target.value})} className={inputClass} />
+                  <p className="text-[10px] text-slate-400 mt-0.5">Mínimo de 6 caracteres</p>
                 </div>
-                
                 <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">Confirmar Nova Senha *</label>
-                  <input 
-                    type="password"
-                    value={passwords.confirm}
-                    onChange={(e) => setPasswords({...passwords, confirm: e.target.value})}
-                    className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                  />
+                  <label className="block text-xs font-medium text-slate-500 mb-1">Confirmar</label>
+                  <input type="password" value={passwords.confirm} onChange={(e) => setPasswords({...passwords, confirm: e.target.value})} className={inputClass} />
                 </div>
               </div>
-              
-              <div className="flex gap-3 mt-6">
-                <button 
-                  onClick={handlePasswordChange}
-                  className="flex-1 bg-blue-600 text-white py-3 rounded-xl hover:bg-blue-700 transition-colors font-semibold shadow-sm"
-                >
-                  Alterar Senha
+              <div className="flex gap-2 mt-5">
+                <button onClick={handlePasswordChange} className="flex-1 bg-blue-600 text-white py-2.5 rounded-lg hover:bg-blue-700 transition-colors text-sm font-semibold">
+                  Alterar
                 </button>
-                <button 
-                  onClick={() => setShowPasswordModal(false)}
-                  className="flex-1 bg-slate-100 text-slate-700 py-3 rounded-xl hover:bg-slate-200 transition-colors font-semibold"
-                >
+                <button onClick={() => setShowPasswordModal(false)} className="flex-1 bg-slate-100 text-slate-700 py-2.5 rounded-lg hover:bg-slate-200 transition-colors text-sm font-semibold">
                   Cancelar
                 </button>
               </div>
