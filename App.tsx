@@ -16,7 +16,7 @@ import * as Storage from './services/storage';
 type ViewState = 'landing' | 'login' | 'register' | 'app' | 'checkout' | 'confirmation';
 
 const App: React.FC = () => {
-  const [view, setView] = useState<ViewState>('landing');
+  const [view, setView] = useState<ViewState>('login');
   const [selectedPlan, setSelectedPlan] = useState<Plan | null>(null);
   const [registrationData, setRegistrationData] = useState<any>(null);
   // paymentData is not really used except for confirmation, but we can keep it simple
@@ -36,7 +36,7 @@ const App: React.FC = () => {
              // Fallback if plan not found, maybe show pricing or let them pick again
              // ideally redirect to pricing, logged in as pending.
              // For now, let's just show pricing or landing, but they are logged in.
-             setView('landing');
+             setView('login');
         }
       } else {
         setView('app');
@@ -67,7 +67,7 @@ const App: React.FC = () => {
 
   const navigateToHome = () => {
     Storage.logout();
-    setView('landing');
+    setView('login');
     window.scrollTo(0, 0);
   };
 
@@ -138,14 +138,14 @@ const App: React.FC = () => {
       )}
 
       {view === 'login' && (
-        <Auth onLoginSuccess={navigateToApp} onBack={() => setView('landing')} />
+        <Auth onLoginSuccess={navigateToApp} onBack={() => setView('login')} />
       )}
 
       {view === 'register' && selectedPlan && (
         <Register 
             plan={selectedPlan} 
             onSuccess={handleRegisterSuccess} 
-            onBack={() => setView('landing')} 
+            onBack={() => setView('login')} 
         />
       )}
 
@@ -153,7 +153,7 @@ const App: React.FC = () => {
         <Checkout
           plan={selectedPlan}
           onSuccess={handlePaymentSuccess}
-          onBack={() => setView('landing')}
+          onBack={() => setView('login')}
           initialUserData={registrationData}
         />
       )}
