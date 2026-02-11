@@ -29,7 +29,7 @@ const PDF_DIR = process.env.PDF_PATH || path.join(__dirname, 'data', 'pdfs');
 // --- SEGURANÇA ---
 
 // CORS restrito a origens permitidas
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,http://localhost:5173').split(',');
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,http://localhost:5173,https://elevex.uxcodedev.com.br').split(',');
 app.use(cors({
   origin: (origin, callback) => {
     // Permite requests sem origin (Postman, curl, server-to-server)
@@ -38,7 +38,8 @@ app.use(cors({
     } else {
       callback(new Error('Bloqueado pelo CORS'));
     }
-  }
+  },
+  credentials: true
 }));
 app.use(express.json({ limit: '1mb' }));
 
@@ -470,11 +471,27 @@ function validateEnv() {
   }
 }
 
+// --- SERVIR FRONTEND ESTÁTICO (produção) ---
+const distPath = path.join(__dirname, '..', 'dist');
+if (fs.existsSync(distPath)) {
+  console.log('📦 Servindo frontend estático de:', distPath);
+  app.use(express.static(distPath));
+}
+
 async function startServer() {
   try {
     validateEnv();
     console.log('\n🚀 Iniciando Elevex RAG Server...\n');
     
+    // SPA fallback — qualquer rota não-API retorna o index.html
+    if (fs.existsSync(distPath)) {
+      app.get('*', (req, res, next) => {
+        // Não interceptar rotas de API
+        if (req.path.startsWith('/api/')) return next();
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    }
+
     // Inicia servidor IMEDIATAMENTE (antes de carregar vetores)
     const server = app.listen(PORT, () => {
       console.log(`\n✅ Servidor rodando em http://localhost:${PORT}`);

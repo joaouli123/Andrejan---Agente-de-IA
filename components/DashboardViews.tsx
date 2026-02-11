@@ -101,6 +101,18 @@ export const AgentsGrid: React.FC<{ user: UserProfile, onSelectAgent: (id: strin
           </div>
         )}
 
+        {/* Assistentes do Sistema */}
+        {systemAgents.length > 0 && (
+          <div className="mb-8">
+            <h3 className="text-xs sm:text-sm font-bold text-slate-400 uppercase tracking-wider mb-3 sm:mb-4 flex items-center">
+                <Zap className="w-4 h-4 mr-2" /> Assistentes Técnicos
+            </h3>
+            <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-6 lg:gap-8">
+                {systemAgents.map(agent => <AgentCard key={agent.id} agent={agent} onSelect={onSelectAgent} />)}
+            </div>
+          </div>
+        )}
+
       </div>
     </div>
   );
