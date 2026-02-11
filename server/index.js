@@ -12,7 +12,7 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 
 import { ragQuery, searchOnly } from './services/ragService.js';
-import { initializeChroma, getStats, clearCollection, addDocuments, hasSource, getIndexedSources, isLoading, getLoadingProgress } from './services/vectorStore.js';
+import { initializeChroma, getStats, clearCollection, addDocuments, hasSource, getIndexedSources, isLoading, getLoadingProgress, compactStore } from './services/vectorStore.js';
 import { extractTextFromPDF, extractTextWithOCR, splitTextIntoChunks, terminateOCR } from './services/pdfExtractor.js';
 import { generateEmbeddings } from './services/embeddingService.js';
 import rateLimit from 'express-rate-limit';
@@ -447,6 +447,73 @@ app.delete('/api/clear', adminMiddleware, async (req, res) => {
   try {
     await clearCollection();
     res.json({ success: true, message: 'Banco de vetores limpo' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Importação em massa de dados (NDJSON streaming)
+ * Recebe chunks de documentos+embeddings e salva no vector store
+ * Usado para transferir vectors.json local para servidor remoto (Railway)
+ */
+app.post('/api/import-data', adminMiddleware, express.text({ limit: '100mb', type: '*/*' }), async (req, res) => {
+  try {
+    const body = typeof req.body === 'string' ? req.body : '';
+    const lines = body.split('\n').filter(l => l.trim());
+    
+    if (lines.length === 0) {
+      return res.status(400).json({ error: 'Nenhum dado recebido' });
+    }
+
+    let imported = 0;
+    let errors = 0;
+    const chunks = [];
+    const embeddings = [];
+
+    for (const line of lines) {
+      try {
+        const doc = JSON.parse(line);
+        if (!doc.id || !doc.document || !doc.embedding || !doc.metadata) {
+          errors++;
+          continue;
+        }
+        chunks.push({
+          id: doc.id,
+          content: doc.document,
+          metadata: doc.metadata
+        });
+        embeddings.push(doc.embedding);
+        imported++;
+      } catch (e) {
+        errors++;
+      }
+    }
+
+    if (chunks.length > 0) {
+      await addDocuments(chunks, embeddings);
+    }
+
+    console.log(`📥 Importados ${imported} documentos (${errors} erros)`);
+    res.json({ 
+      success: true, 
+      imported, 
+      errors, 
+      totalInStore: (await getStats()).totalDocuments 
+    });
+  } catch (error) {
+    console.error('Erro na importação:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Compactar vector store (merge NDJSON → vectors.json)
+ */
+app.post('/api/compact', adminMiddleware, (req, res) => {
+  try {
+    compactStore();
+    res.json({ success: true, message: 'Vector store compactado' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
