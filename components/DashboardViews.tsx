@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { DEFAULT_AGENTS, ChatSession, UserProfile, Agent } from '../types';
+import { ChatSession, UserProfile, Agent } from '../types';
 import * as Icons from 'lucide-react';
 import { 
     Trash2, MessageSquare, Clock, ArrowRight, Shield, CreditCard, 
@@ -73,8 +73,7 @@ export const AgentsGrid: React.FC<{ user: UserProfile, onSelectAgent: (id: strin
       setAgents(Storage.getAgents());
   }, []);
 
-  const systemAgents = agents.filter(a => !a.isCustom);
-  const customAgents = agents.filter(a => a.isCustom);
+  const customAgents = agents.filter(a => a.isCustom || true); // Todos os agentes são tratados igualmente
 
   return (
     <div className="h-full overflow-y-auto p-4 sm:p-6 lg:p-12 custom-scrollbar bg-slate-50">
@@ -89,27 +88,23 @@ export const AgentsGrid: React.FC<{ user: UserProfile, onSelectAgent: (id: strin
           <p className="text-slate-500 mt-1 sm:mt-2 text-sm sm:text-lg max-w-2xl">Central de Diagnóstico: Selecione o módulo especializado para iniciar o atendimento.</p>
         </div>
 
-        {/* Especialistas da Empresa */}
-        {customAgents.length > 0 && (
-          <div className="mb-8">
-            <h3 className="text-xs sm:text-sm font-bold text-slate-400 uppercase tracking-wider mb-3 sm:mb-4 flex items-center">
-                <Rocket className="w-4 h-4 mr-2" /> Especialistas da Empresa
-            </h3>
-            <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-6 lg:gap-8">
-                {customAgents.map(agent => <AgentCard key={agent.id} agent={agent} onSelect={onSelectAgent} />)}
-            </div>
-          </div>
-        )}
-
-        {/* Assistentes do Sistema */}
-        {systemAgents.length > 0 && (
+        {/* Agentes */}
+        {customAgents.length > 0 ? (
           <div className="mb-8">
             <h3 className="text-xs sm:text-sm font-bold text-slate-400 uppercase tracking-wider mb-3 sm:mb-4 flex items-center">
                 <Zap className="w-4 h-4 mr-2" /> Assistentes Técnicos
             </h3>
             <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-6 lg:gap-8">
-                {systemAgents.map(agent => <AgentCard key={agent.id} agent={agent} onSelect={onSelectAgent} />)}
+                {customAgents.map(agent => <AgentCard key={agent.id} agent={agent} onSelect={onSelectAgent} />)}
             </div>
+          </div>
+        ) : (
+          <div className="mb-8 text-center py-16">
+            <div className="inline-flex items-center justify-center w-16 h-16 bg-slate-100 rounded-2xl mb-4">
+              <Rocket className="w-8 h-8 text-slate-400" />
+            </div>
+            <h3 className="text-lg font-semibold text-slate-600 mb-2">Nenhum agente criado ainda</h3>
+            <p className="text-slate-400 text-sm">Crie seus agentes personalizados no painel de administração.</p>
           </div>
         )}
 
