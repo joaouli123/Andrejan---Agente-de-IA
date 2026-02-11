@@ -3,7 +3,9 @@
  * Centralizes server URL and authentication for all RAG API calls
  */
 
-export const RAG_SERVER_URL = process.env.RAG_SERVER_URL || 'http://localhost:3002';
+// Em produção (mesmo servidor), usa URL vazia = fetch relativo (/api/...)
+// Em dev local, Vite define como 'http://localhost:3002'
+export const RAG_SERVER_URL = process.env.RAG_SERVER_URL;
 
 const RAG_API_KEY = process.env.RAG_API_KEY || '';
 const RAG_ADMIN_KEY = process.env.RAG_ADMIN_KEY || '';
