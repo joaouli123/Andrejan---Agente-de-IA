@@ -21,7 +21,8 @@ interface RAGResponse {
 export const queryRAG = async (
   question: string,
   systemInstruction?: string,
-  brandFilter?: string
+  brandFilter?: string,
+  conversationHistory?: { role: string; parts: { text: string }[] }[]
 ): Promise<RAGResponse | null> => {
   try {
     const response = await fetch(`${RAG_SERVER_URL}/api/query`, {
@@ -31,7 +32,8 @@ export const queryRAG = async (
         question,
         systemInstruction,
         topK: 10,
-        brandFilter: brandFilter || null
+        brandFilter: brandFilter || null,
+        conversationHistory: conversationHistory || []
       })
     });
 
@@ -97,7 +99,7 @@ export const getDiagnostic = async (
 
     // SEMPRE usa RAG - só responde com base nos documentos
     if (useRAG) {
-      const ragResponse = await queryRAG(query, systemInstruction, brandFilter);
+      const ragResponse = await queryRAG(query, systemInstruction, brandFilter, history);
       
       if (ragResponse && ragResponse.answer) {
         return ragResponse.answer;

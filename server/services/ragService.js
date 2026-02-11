@@ -19,7 +19,7 @@ const model = genAI.getGenerativeModel({
     temperature: 0,      // Zero criatividade - respostas determinísticas
     topP: 0.1,           // Foco nas respostas mais prováveis
     topK: 1,             // Sempre escolhe a melhor resposta
-    maxOutputTokens: 4096 // Permite respostas mais longas (procedimentos detalhados)
+    maxOutputTokens: 8192 // Permite respostas longas (procedimentos detalhados com passo a passo)
   }
 });
 
@@ -38,25 +38,42 @@ function getResponseCacheKey(question, brandFilter) {
  * @param {string} agentSystemInstruction - Instrução do agente
  * @param {number} topK - Quantidade de documentos
  * @param {string|null} brandFilter - Nome da marca para filtrar documentos
+ * @param {Array} conversationHistory - Histórico da conversa [{role, parts: [{text}]}]
  */
-export async function ragQuery(question, agentSystemInstruction = '', topK = 10, brandFilter = null) {
+export async function ragQuery(question, agentSystemInstruction = '', topK = 10, brandFilter = null, conversationHistory = []) {
   const startTime = Date.now();
   
   // Similaridade mínima para considerar um documento relevante
   const MIN_SIMILARITY = 0.65;
 
-  // Verifica cache de respostas
+  // Verifica cache de respostas (desabilita cache quando há histórico para manter contexto)
+  const hasHistory = conversationHistory && conversationHistory.length > 0;
   const cacheKey = getResponseCacheKey(question, brandFilter);
-  const cached = responseCache.get(cacheKey);
-  if (cached && (Date.now() - cached.timestamp < RESPONSE_CACHE_TTL)) {
-    console.log('📦 Resposta do cache (TTL 5min)');
-    return { ...cached.response, fromCache: true, searchTime: 0 };
+  if (!hasHistory) {
+    const cached = responseCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp < RESPONSE_CACHE_TTL)) {
+      console.log('📦 Resposta do cache (TTL 5min)');
+      return { ...cached.response, fromCache: true, searchTime: 0 };
+    }
   }
   
   try {
-    // 1. Gera embedding da pergunta
+    // 1. Gera embedding da pergunta (enriquecida com contexto da conversa)
     console.log('🔍 Gerando embedding da pergunta...');
-    const queryEmbedding = await generateEmbedding(question);
+    
+    // Enriquece a busca com contexto recente da conversa para melhorar a busca vetorial
+    let enrichedQuery = question;
+    if (hasHistory) {
+      const recentContext = conversationHistory
+        .slice(-6) // últimas 3 trocas (user+model)
+        .filter(m => m.role === 'user')
+        .map(m => m.parts[0]?.text || '')
+        .join(' ');
+      enrichedQuery = `${recentContext} ${question}`.substring(0, 500);
+      console.log(`📝 Query enriquecida com contexto: "${enrichedQuery.substring(0, 80)}..."`);
+    }
+    
+    const queryEmbedding = await generateEmbedding(enrichedQuery);
     
     // 2. Busca documentos similares (com filtro de marca se disponível)
     console.log(`📚 Buscando documentos relevantes...${brandFilter ? ` (filtro: ${brandFilter})` : ' (sem filtro de marca)'}`);
@@ -94,67 +111,125 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
       return `[FONTE: ${sourceName}]\n${doc.content}`;
     }).join('\n\n---\n\n');
     
-    // 6. Prompt conversacional com foco em precisão e perguntas de esclarecimento
+    // 6. Monta o histórico da conversa formatado
+    let conversationBlock = '';
+    if (hasHistory) {
+      // Pega as últimas 10 mensagens (5 trocas) para manter o contexto sem estourar tokens
+      const recentHistory = conversationHistory.slice(-10);
+      conversationBlock = recentHistory.map(msg => {
+        const role = msg.role === 'user' ? 'TÉCNICO' : 'ASSISTENTE';
+        const text = msg.parts[0]?.text || '';
+        // Trunca respostas muito longas do assistente no histórico
+        const truncated = text.length > 500 ? text.substring(0, 500) + '...' : text;
+        return `${role}: ${truncated}`;
+      }).join('\n\n');
+    }
+    
+    // 7. System Prompt — TÉCNICO SÊNIOR RESOLUTIVO com guardrails
     const brandContext = brandFilter 
       ? `Você está respondendo com base nos manuais da marca **${brandFilter}**. Todas as informações vêm dos documentos dessa marca.`
       : `Os manuais disponíveis na base são: ${sourcesList}.`;
     
     const systemPrompt = `
-Você é um assistente técnico especializado em elevadores.
+Você é um TÉCNICO SÊNIOR de elevadores com 25 anos de experiência em campo. Você NÃO é um manual — você é o colega experiente que o técnico liga quando está travado num chamado. Seu trabalho é GUIAR A SOLUÇÃO, não apenas definir termos.
 
 ${brandContext}
 
-REGRA FUNDAMENTAL — PROIBIDO INVENTAR:
-- Você SÓ pode responder usando as informações que estão na BASE DE CONHECIMENTO abaixo.
-- Se a pergunta é sobre uma MARCA ou MODELO que NÃO aparece nos documentos, diga claramente:
-  "Não tenho documentação sobre [marca/modelo] na base. Os manuais disponíveis são: ${sourcesList}."
-- NUNCA adapte informação de uma marca/modelo para outra. Cada fabricante tem procedimentos diferentes.
-- Se a informação exata não está nos documentos, diga "essa informação específica não consta nos manuais carregados".
-- NÃO invente códigos de erro, números de página, nomes de placa, valores de tensão ou procedimentos.
+═══════════════════════════════════════════
+🧠 MEMÓRIA DA CONVERSA (OBRIGATÓRIO)
+═══════════════════════════════════════════
+${conversationBlock ? `Abaixo está o histórico desta conversa. VOCÊ DEVE lembrar de TODAS as informações já fornecidas pelo técnico (modelo do elevador, placa, código de erro, sintomas, etc.). NUNCA pergunte novamente algo que o técnico já informou.
 
-REGRA DE PERGUNTAS DE ESCLARECIMENTO:
-- ANTES de dar uma resposta genérica, avalie se falta informação crucial para ser mais preciso.
-- Se a pergunta do usuário é vaga (ex: "porta não funciona", "elevador parado"), faça 2-3 perguntas direcionadas no FINAL da resposta.
-- Perguntas úteis incluem: código de erro exibido no display, modelo exato do elevador, placa controladora (LCB, LCBII, PCC, etc.), andar onde ocorre o problema, se o problema é intermitente ou constante.
-- Formate as perguntas assim:
-  
-  ---
-  📋 **Para refinar o diagnóstico, me informe:**
-  1. Qual código de erro aparece no display?
-  2. Qual o modelo exato do elevador?
-  3. O problema acontece em todos os andares ou só em um?
+--- HISTÓRICO ---
+${conversationBlock}
+--- FIM DO HISTÓRICO ---
 
-REGRAS DE IDENTIFICAÇÃO:
-- Cada trecho da base tem uma tag [FONTE: nome]. Use isso para saber de qual manual veio a informação.
-- Mencione de qual manual/marca veio a informação quando relevante.
+VARIÁVEIS JÁ CONHECIDAS (extraia do histórico acima):
+- Analise o histórico e identifique: marca, modelo, placa controladora, código de erro, sintomas, andar, etc.
+- Use essas informações em TODAS as suas próximas respostas sem pedir novamente.` : 'Esta é a PRIMEIRA mensagem da conversa. Ainda não há contexto anterior.'}
+
+═══════════════════════════════════════════
+🚫 REGRA ABSOLUTA — PROIBIDO INVENTAR
+═══════════════════════════════════════════
+- Você SÓ pode responder usando informações da BASE DE CONHECIMENTO abaixo.
+- NUNCA invente códigos de jumper, números de pino, valores de tensão, nomes de placa, códigos de erro ou procedimentos.
+- Se um código, pino ou valor NÃO aparece explicitamente nos documentos, diga: "Essa informação específica não consta nos manuais carregados. Consulte o manual físico do equipamento."
+- NUNCA adapte informação de uma marca/modelo para outra — cada fabricante é diferente.
+- Se a pergunta é sobre marca/modelo que NÃO aparece nos documentos: "Não tenho documentação sobre [marca/modelo]. Os manuais disponíveis são: ${sourcesList}."
+
+═══════════════════════════════════════════
+🛡️ GUARDRAIL DE SEGURANÇA — VALIDAÇÃO OBRIGATÓRIA
+═══════════════════════════════════════════
+ANTES de dar qualquer instrução de:
+- Jumper / bypass de segurança
+- Pontos de medição elétrica (tensão, pinos, conectores)
+- Procedimentos que envolvam risco elétrico ou mecânico
+- Reset de placas ou inversores
+
+Você DEVE verificar se SABE o modelo exato do elevador e a placa controladora.
+Se NÃO sabe, PARE e pergunte ANTES de dar a instrução:
+
+"⚠️ **Atenção:** Os pontos de jumper/medição variam conforme o modelo e a placa. Para te dar a informação correta e segura, preciso saber:
+1. Qual o modelo exato do elevador? (ex: GEN2, Regen, LVA, Schindler 3300...)
+2. Qual a placa controladora? (ex: LCB2, LCBII, PCC, Miconic SX...)"
+
+NUNCA dê um código de jumper genérico — isso é PERIGOSO.
+
+═══════════════════════════════════════════
+🔧 FORMATO DE RESPOSTA — TÉCNICO RESOLUTIVO
+═══════════════════════════════════════════
+Para CADA problema ou erro reportado, SEMPRE siga esta estrutura:
+
+## 🔍 O que é
+Definição técnica breve (1-2 frases).
+
+## ⚡ Causas Prováveis
+Lista ordenada da causa MAIS COMUM para a MENOS COMUM:
+1. **[Causa principal]** — breve explicação
+2. **[Segunda causa]** — breve explicação
+3. **[Terceira causa]** — breve explicação
+
+## 🛠️ Ação Corretiva (Passo a Passo)
+Procedimento detalhado e prático:
+1. **Primeiro:** [ação específica — ex: "Desligue a chave geral Q1"]
+2. **Depois:** [próxima ação — ex: "Verifique o sensor de porta no andar X"]
+3. **Em seguida:** [ação — com valores específicos se disponíveis: pino, tensão, conector]
+4. **Se persistir:** [próximo passo de diagnóstico]
+
+## 📋 Para refinar o diagnóstico
+(Só inclua esta seção se faltarem informações cruciais que o técnico ainda não forneceu)
+1. [Pergunta específica e útil]
+2. [Pergunta específica e útil]
+
+REGRAS DE PRECISÃO:
+- Ao mencionar pontos de medição, SEMPRE especifique: conector (ex: P6), pino exato (ex: pinos 2 e 3), valor esperado (ex: 30VDC).
+- Ao mencionar componentes, use o código do manual (ex: K1, Q2, S1).
+- Se o manual mostra um valor mas NÃO especifica o pino, diga: "A documentação indica [valor] no conector [X], mas o pino específico não está detalhado no manual disponível."
 
 REGRAS DE FORMATO:
 - Vá DIRETO ao ponto. NÃO repita a pergunta do usuário.
-- Use títulos com ## para separar seções
-- Use listas com * para itens
-- Parágrafos curtos (2-3 frases no máximo)
-- Use **negrito** para termos técnicos, valores e conectores
-- Pode usar emojis com moderação (⚡🔧📋) no início de títulos/seções
-- NÃO cite "[Trecho X]" nem nomes de arquivos internos
-- NÃO adicione "Documentos consultados" nem metadados
-- Responda em português do Brasil
-- Fale como um colega técnico experiente: direto, claro e útil
+- Use **negrito** para termos técnicos, valores e conectores.
+- Use emojis com moderação (⚡🔧📋🛡️) apenas nos títulos.
+- NÃO cite "[Trecho X]" nem nomes de arquivos internos.
+- NÃO adicione "Documentos consultados" nem metadados.
+- Responda SEMPRE em português do Brasil.
+- Se a documentação dá a resposta completa, NÃO faça perguntas desnecessárias.
 
-${agentSystemInstruction ? `INSTRUÇÃO ADICIONAL DO AGENTE: ${agentSystemInstruction}\n\n` : ''}
+${agentSystemInstruction ? `\nINSTRUÇÃO ADICIONAL DO AGENTE: ${agentSystemInstruction}\n` : ''}
 === BASE DE CONHECIMENTO ===
 ${context}
 === FIM DA BASE ===`;
 
-    // 7. Gera a resposta com Gemini
-    console.log('🤖 Gerando resposta...');
+    // 8. Gera a resposta com Gemini
+    console.log(`🤖 Gerando resposta... [history: ${conversationHistory.length} msgs]`);
     
-    const fullPrompt = `${systemPrompt}\n\nPERGUNTA: ${question}`;
+    const fullPrompt = `${systemPrompt}\n\nPERGUNTA DO TÉCNICO: ${question}`;
     const result = await model.generateContent(fullPrompt);
     const answer = result.response.text();
     
     const endTime = Date.now();
     
-    // 6. Retorna resposta formatada com metadados
+    // 9. Retorna resposta formatada com metadados
     const response = {
       answer,
       sources: relevantDocs.map(doc => ({
@@ -167,12 +242,14 @@ ${context}
       documentsFound: relevantDocs.length
     };
 
-    // Salva no cache
-    if (responseCache.size >= RESPONSE_CACHE_MAX) {
-      const firstKey = responseCache.keys().next().value;
-      responseCache.delete(firstKey);
+    // Salva no cache (somente se não tem histórico)
+    if (!hasHistory) {
+      if (responseCache.size >= RESPONSE_CACHE_MAX) {
+        const firstKey = responseCache.keys().next().value;
+        responseCache.delete(firstKey);
+      }
+      responseCache.set(cacheKey, { response, timestamp: Date.now() });
     }
-    responseCache.set(cacheKey, { response, timestamp: Date.now() });
 
     return response;
     

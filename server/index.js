@@ -385,7 +385,7 @@ app.get('/api/upload/status/:taskId', adminMiddleware, (req, res) => {
  * Busca RAG - Endpoint principal
  */
 app.post('/api/query', authMiddleware, queryLimiter, async (req, res) => {
-  const { question, systemInstruction, topK = 5, brandFilter = null } = req.body;
+  const { question, systemInstruction, topK = 5, brandFilter = null, conversationHistory = [] } = req.body;
   
   if (!question) {
     return res.status(400).json({ error: 'Pergunta é obrigatória' });
@@ -406,8 +406,8 @@ app.post('/api/query', authMiddleware, queryLimiter, async (req, res) => {
   }
   
   try {
-    console.log(`\n🔍 Query: "${question.substring(0, 50)}..."${brandFilter ? ` [brand: ${brandFilter}]` : ''}`);    
-    const result = await ragQuery(question, systemInstruction, topK, brandFilter);
+    console.log(`\n🔍 Query: "${question.substring(0, 50)}..."${brandFilter ? ` [brand: ${brandFilter}]` : ''} [history: ${conversationHistory.length} msgs]`);    
+    const result = await ragQuery(question, systemInstruction, topK, brandFilter, conversationHistory);
     
     console.log(`✅ Resposta gerada em ${result.searchTime}ms`);
     
