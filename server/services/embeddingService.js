@@ -52,40 +52,83 @@ export async function generateEmbedding(text) {
  * Usa batches de 50 textos com a API Gemini (rápido e eficiente)
  */
 export async function generateEmbeddings(texts, onProgress) {
-  const embeddings = [];
-  const batchSize = 50; // gemini-embedding-001 suporta batches maiores
-  
-  for (let i = 0; i < texts.length; i += batchSize) {
-    const batch = texts.slice(i, i + batchSize);
-    
-    const batchPromises = batch.map(async (text, idx) => {
+  const embeddings = new Array(texts.length).fill(null);
+
+  const batchSize = Math.max(1, parseInt(process.env.EMBED_BATCH_SIZE || '32', 10));
+  const concurrency = Math.max(1, parseInt(process.env.EMBED_CONCURRENCY || '8', 10));
+  const batchDelayMs = Math.max(0, parseInt(process.env.EMBED_BATCH_DELAY_MS || '150', 10));
+  const requestDelayMs = Math.max(0, parseInt(process.env.EMBED_REQUEST_DELAY_MS || '0', 10));
+
+  // Preferir batch real se o SDK suportar (muito mais rápido e estável)
+  const hasBatch = typeof embeddingModel.batchEmbedContents === 'function';
+
+  if (hasBatch) {
+    for (let i = 0; i < texts.length; i += batchSize) {
+      const batch = texts.slice(i, i + batchSize);
       try {
-        // Rate limiting mínimo - 50ms entre requisições
-        await new Promise(resolve => setTimeout(resolve, idx * 50));
-        return await generateEmbedding(text);
+        const resp = await embeddingModel.batchEmbedContents({
+          requests: batch.map((t) => ({ content: { parts: [{ text: t }] } })),
+        });
+        const values = resp?.embeddings?.map(e => e.values) || [];
+        for (let j = 0; j < batch.length; j++) {
+          embeddings[i + j] = values[j] || null;
+        }
       } catch (error) {
-        console.error(`Erro no texto ${i + idx}:`, error.message);
-        return null;
+        console.error(`Erro no batch ${i}-${i + batch.length - 1}:`, error.message);
+        // fallback: tenta individualmente com concorrência
+        for (let j = 0; j < batch.length; j++) {
+          try {
+            embeddings[i + j] = await generateEmbedding(batch[j]);
+          } catch {
+            embeddings[i + j] = null;
+          }
+        }
       }
-    });
-    
-    const batchResults = await Promise.all(batchPromises);
-    embeddings.push(...batchResults);
-    
-    if (onProgress) {
-      onProgress({
-        current: Math.min(i + batchSize, texts.length),
-        total: texts.length,
-        percentage: Math.round((Math.min(i + batchSize, texts.length) / texts.length) * 100)
-      });
+
+      if (onProgress) {
+        onProgress({
+          current: Math.min(i + batch.length, texts.length),
+          total: texts.length,
+          percentage: Math.round((Math.min(i + batch.length, texts.length) / texts.length) * 100)
+        });
+      }
+
+      if (i + batchSize < texts.length && batchDelayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, batchDelayMs));
+      }
     }
-    
-    // Delay menor entre batches
-    if (i + batchSize < texts.length) {
-      await new Promise(resolve => setTimeout(resolve, 500));
+
+    return embeddings;
+  }
+
+  // Fallback: concorrência controlada sem "sleep por item" (mais rápido e previsível)
+  let nextIndex = 0;
+  let done = 0;
+
+  async function worker() {
+    while (true) {
+      const i = nextIndex++;
+      if (i >= texts.length) return;
+      try {
+        if (requestDelayMs > 0) await new Promise(r => setTimeout(r, requestDelayMs));
+        embeddings[i] = await generateEmbedding(texts[i]);
+      } catch (error) {
+        console.error(`Erro no texto ${i}:`, error.message);
+        embeddings[i] = null;
+      }
+      done++;
+      if (onProgress) {
+        onProgress({
+          current: done,
+          total: texts.length,
+          percentage: Math.round((done / texts.length) * 100)
+        });
+      }
     }
   }
-  
+
+  const workers = Array.from({ length: Math.min(concurrency, texts.length) }, () => worker());
+  await Promise.all(workers);
   return embeddings;
 }
 
