@@ -37,7 +37,7 @@ const responseCache = new Map();
 const RESPONSE_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 const RESPONSE_CACHE_MAX = 50;
 // Bump this when changing prompts/guardrails to avoid serving stale cached answers
-const RESPONSE_CACHE_VERSION = '2026-02-12-4';
+const RESPONSE_CACHE_VERSION = '2026-02-12-5';
 
 /**
  * Corrige encoding corrompido (UTF-8 decodificado como Latin-1)
@@ -170,6 +170,20 @@ const PINOUT_KEYWORDS = [
   'tabela',
   'esquema',
   'diagrama',
+];
+
+const STATUS_INDICATOR_KEYWORDS = [
+  'indicador',
+  'status',
+  'led',
+  'pisca',
+  'piscando',
+  'piscando rapido',
+  'piscando rapidamente',
+  'blink',
+  '4x/s',
+  '10 segundos',
+  'fault',
 ];
 
 const BRAND_CANONICAL_MAP = [
@@ -375,6 +389,47 @@ function countHits(text, keywords) {
     if (text.includes(kw)) hits += 1;
   }
   return hits;
+}
+
+function isStatusIndicatorQuery(question) {
+  const q = normalizeText(question);
+  if (!q) return false;
+
+  // Indícios fortes: padrão de piscadas, indicador/LED, frequência, fault
+  const strongPatterns = [
+    'indicador de status',
+    'led',
+    'pisca',
+    'piscando',
+    '4x/s',
+    '10 segundos',
+    'fault',
+  ];
+
+  if (strongPatterns.some(p => q.includes(normalizeText(p)))) return true;
+  if (/\b\d+\s*x\s*\/\s*s\b/i.test(question || '')) return true;
+  if (/\b\d+\s*x\s*a\s*cada\s*\d+\s*(s|seg|segundos)\b/i.test(question || '')) return true;
+
+  return false;
+}
+
+function docsHaveStatusIndicatorEvidence(docs) {
+  if (!docs || docs.length === 0) return false;
+  return docs.some(d => {
+    const t = docText(d);
+    const hits = countHits(t, STATUS_INDICATOR_KEYWORDS.map(normalizeText));
+    return hits >= 2; // exige pelo menos 2 termos (ex.: led + pisca, status + fault)
+  });
+}
+
+function buildStatusIndicatorClarification(sessionState) {
+  const modelLine = sessionState?.model ? `Modelo: ${sessionState.model}.` : '';
+  return `Eu não tenho, no banco de conhecimento, a legenda/tabela que mapeia esse padrão de piscadas do indicador de status (${modelLine}). Sem essa legenda, eu não posso afirmar a causa com segurança.
+
+Para eu interpretar corretamente:
+- Em qual módulo/placa está esse indicador de status (nome escrito na placa/módulo)?
+- Você consegue enviar uma foto do LED e da legenda (ou a página do manual onde aparece a tabela de piscadas)?
+- Confirme se aparece alguma mensagem no terminal/display além de “fault”.`;
 }
 
 function rerankAndFilterDocs(docs, intent, pinoutQuery = false) {
@@ -847,6 +902,18 @@ Para eu confirmar os pinos sem chute, me envie uma destas coisas:
       }
     }
 
+    // Se a pergunta é sobre indicador/LED/padrão de piscadas, só responda significado se houver legenda/tabela explícita na base.
+    if (isStatusIndicatorQuery(question)) {
+      const hasIndicatorEvidence = docsHaveStatusIndicatorEvidence(relevantDocs);
+      if (!hasIndicatorEvidence) {
+        return {
+          answer: buildStatusIndicatorClarification(sessionState),
+          sources: [],
+          searchTime: Date.now() - startTime,
+        };
+      }
+    }
+
     // ═══ SELECIONA OS MELHORES DOCUMENTOS (diversidade de fontes) ═══
     // Garante que documentos de diferentes fontes apareçam (não só do mesmo PDF)
     const MAX_CONTEXT_DOCS = 15; // Mais contexto = respostas mais completas
@@ -928,6 +995,10 @@ Para eu confirmar os pinos sem chute, me envie uma destas coisas:
   Regra crítica de evidência (conectores/pinos):
   - NUNCA cite conector/pino/identificador (ex.: C1, J5, CN1, J*, P*) a menos que ele apareça explicitamente na BASE DE CONHECIMENTO abaixo.
   - Se não estiver explícito, não especule. Ofereça procedimento de diagnóstico genérico e peça a página/tabela/trecho do diagrama quando necessário.
+
+  Regra crítica de evidência (LED/piscadas/status):
+  - NUNCA interprete padrão de piscadas (ex.: "4x/s", "1x a cada 10s") sem a tabela/legenda explícita na BASE.
+  - Se a legenda não estiver presente, peça a página/foto do manual e o nome do módulo/placa do indicador.
 
   Evite frases robóticas do tipo "Com base na documentação disponível...". Use linguagem natural, porém técnica.
 
