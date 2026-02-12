@@ -5,7 +5,7 @@
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { generateEmbedding } from './embeddingService.js';
-import { searchSimilar } from './vectorStore.js';
+import { searchSimilar, getIndexedSources } from './vectorStore.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -25,7 +25,7 @@ const model = genAI.getGenerativeModel({
 
 // Modelo leve para reescrita de queries (multi-query retrieval)
 const queryRewriter = genAI.getGenerativeModel({ 
-  model: 'gemini-2.0-flash',
+  model: 'gemini-2.5-flash',
   generationConfig: {
     temperature: 0.3,
     maxOutputTokens: 512
@@ -78,6 +78,62 @@ function getResponseCacheKey(question, brandFilter) {
   return `${(question || '').trim().toLowerCase().substring(0, 200)}|${brandFilter || ''}`;
 }
 
+const BOARD_TOKENS = [
+  'LCBII', 'LCB', 'MCSS', 'MCP', 'MCB', 'RBI', 'GMUX', 'PLA6001', 'DCB', 'PIB',
+  'GCIOB', 'MCP100', 'PLA6001', 'URM', 'CAVF', 'GDCB',
+];
+
+function extractSearchSignals(question, conversationHistory) {
+  const texts = [
+    question,
+    ...(conversationHistory || [])
+      .filter(m => m?.role === 'user')
+      .slice(-12)
+      .map(m => m?.parts?.[0]?.text || ''),
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const upper = texts.toUpperCase();
+  const boardTokens = BOARD_TOKENS.filter(t => upper.includes(t));
+
+  const errorTokens = Array.from(
+    new Set(
+      (texts.match(/\b([A-Z]{1,4}\s?-?\s?\d{1,4}|E\s?\d{2,4}|\d{2,4})\b/g) || [])
+        .map(s => s.replace(/\s+/g, '').toUpperCase())
+        .filter(s => s.length >= 2 && s.length <= 8)
+    )
+  ).slice(0, 6);
+
+  return {
+    boardTokens,
+    errorTokens,
+  };
+}
+
+function buildClarifyingQuestions(question, hasHistory, signals) {
+  const needsHardwareSpecific = /tens[aã]o|alimenta|jumper|bypass|med(i|iç)[aã]o|medir|conector|pino|pinagem|reset|drive|inversor/i.test(question);
+  const hasBoard = (signals?.boardTokens?.length || 0) > 0;
+
+  const questions = [];
+  if (!hasHistory) {
+    questions.push('Qual a marca e o modelo do elevador (como está na etiqueta/manual do equipamento)?');
+  } else {
+    questions.push('Qual é o modelo do elevador (exatamente como aparece no equipamento)?');
+  }
+  if (!hasBoard) {
+    questions.push('Qual o nome da placa/módulo (o que está escrito nela ou no display/diagnóstico)?');
+  }
+  questions.push('Qual o código/mensagem de erro e em que ponto aparece (display, placa, drive)?');
+
+  if (needsHardwareSpecific) {
+    questions.push('Você quer a alimentação de qual conjunto exatamente (placa, drive, fonte, comando de porta)?');
+  }
+
+  // Mantém no máximo 3 perguntas para não virar formulário
+  return questions.slice(0, 3);
+}
+
 /**
  * Realiza busca RAG completa: busca contexto relevante e gera resposta
  * @param {string} question - Pergunta do usuário
@@ -108,25 +164,38 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
     // Em vez de buscar com uma query só, gera variações para encontrar mais documentos relevantes
     console.log('🔍 Gerando queries de busca...');
     
-    // Query original enriquecida com contexto da conversa
+    const signals = extractSearchSignals(question, conversationHistory);
+
+    // Query original enriquecida com contexto + sinais (placa/erro) para melhorar recall
     let enrichedQuery = question;
     if (hasHistory) {
       const recentContext = conversationHistory
-        .slice(-6)
+        .slice(-10)
         .filter(m => m.role === 'user')
         .map(m => m.parts[0]?.text || '')
         .join(' ');
-      enrichedQuery = `${recentContext} ${question}`.substring(0, 500);
+      enrichedQuery = `${recentContext} ${question}`;
     }
+    const signalSuffix = [...(signals.boardTokens || []), ...(signals.errorTokens || [])].join(' ');
+    if (signalSuffix) enrichedQuery = `${enrichedQuery} ${signalSuffix}`;
+    enrichedQuery = enrichedQuery.substring(0, 700);
     
     // Gera 2 variações da pergunta para busca mais ampla
     let searchQueries = [enrichedQuery];
     try {
-      const rewritePrompt = `Você é um assistente de busca técnica de elevadores. Dado a pergunta abaixo, gere EXATAMENTE 2 reformulações diferentes da mesma pergunta usando termos técnicos alternativos. Retorne APENAS as reformulações, uma por linha, sem numeração.
+      const rewritePrompt = `Você é um assistente de BUSCA (não de resposta) para manuais técnicos.
 
-Pergunta: "${question}"${hasHistory ? `\nContexto da conversa: ${enrichedQuery.substring(0, 200)}` : ''}
+    Tarefa: gere EXATAMENTE 2 reformulações da pergunta para melhorar a recuperação em um banco vetorial.
 
-Reformulações:`;
+    Regras INEGOCIÁVEIS:
+    - NÃO invente marcas, modelos, placas, códigos ou nomes.
+    - Se existirem tokens na pergunta/contexto (ex: nomes de placas tipo LCBII/MCSS/MCP, ou códigos/erros), mantenha-os IGUAIS.
+    - Pode trocar sinônimos e variar a ordem das palavras, mas sem adicionar entidades novas.
+    - Retorne APENAS as 2 linhas de reformulação (uma por linha), sem numeração e sem texto extra.
+
+    Pergunta: "${question}"${hasHistory ? `\nContexto (resumo): ${enrichedQuery.substring(0, 220)}` : ''}
+
+    Reformulações:`;
       
       const rewriteResult = await queryRewriter.generateContent(rewritePrompt);
       const alternatives = rewriteResult.response.text()
@@ -169,16 +238,24 @@ Reformulações:`;
     const relevantDocs = mergedDocs.filter(doc => doc.similarity >= MIN_SIMILARITY);
     
     console.log(`📊 ${mergedDocs.length} docs únicos encontrados, ${relevantDocs.length} acima do threshold (${MIN_SIMILARITY * 100}%)`);
+    const topSim = relevantDocs.length > 0 ? relevantDocs[0].similarity : 0;
     if (relevantDocs.length > 0) {
-      console.log(`   Top sim: ${Math.round(relevantDocs[0].similarity * 100)}%, Bottom sim: ${Math.round(relevantDocs[relevantDocs.length - 1].similarity * 100)}%`);
+      console.log(`   Top sim: ${Math.round(topSim * 100)}%, Bottom sim: ${Math.round(relevantDocs[relevantDocs.length - 1].similarity * 100)}%`);
     }
-    
+
+    // Se não achou nada relevante, NÃO chuta: faz perguntas para melhorar a busca
     if (relevantDocs.length === 0) {
-      const brandMsg = brandFilter 
-        ? `Não encontrei informações sobre "${brandFilter}" na base de conhecimento.\n\nVerifique se os manuais dessa marca foram carregados no sistema.`
-        : 'Não encontrei informações relevantes na base de conhecimento para essa pergunta.';
+      const indexed = (getIndexedSources?.() || []).map(s => fixEncoding((s || '').replace(/^\d+-\d+-/, '').replace(/\.pdf$/i, ''))).filter(Boolean);
+      const sourcesText = indexed.length ? `Manuais disponíveis aqui: ${indexed.slice(0, 20).join(', ')}.` : 'Nenhum manual parece estar indexado no momento.';
+
+      const questions = buildClarifyingQuestions(question, hasHistory, signals);
+      const qBlock = questions.map(q => `- ${q}`).join('\n');
+      const brandMsg = brandFilter
+        ? `Não encontrei trechos relevantes dentro do filtro de marca selecionado.`
+        : `Não encontrei trechos relevantes na base para essa pergunta.`;
+
       return {
-        answer: `❌ ${brandMsg}\n\nTente:\n* Reformular sua pergunta com termos mais específicos\n* Verificar se os documentos corretos estão na Base de Conhecimento`,
+        answer: `${brandMsg}\n\nPra eu achar certinho nos manuais, me responde rapidinho:\n${qBlock}\n\n${sourcesText}`,
         sources: [],
         searchTime: Date.now() - startTime
       };
@@ -198,6 +275,20 @@ Reformulações:`;
       if (sourceCounts[source] <= MAX_PER_SOURCE) {
         selectedDocs.push(doc);
       }
+    }
+
+    // Se a pergunta exige orientação elétrica/jumper e ainda não temos sinais mínimos (modelo/placa), pergunta antes de orientar.
+    // Isso evita respostas perigosas mesmo quando existe algum contexto parecido.
+    const needsHardwareSpecific = /tens[aã]o|alimenta|jumper|bypass|med(i|iç)[aã]o|medir|conector|pino|pinagem|reset|drive|inversor/i.test(question);
+    const hasBoard = (signals.boardTokens || []).length > 0;
+    if (needsHardwareSpecific && !hasBoard) {
+      const questions = buildClarifyingQuestions(question, hasHistory, signals);
+      const qBlock = questions.map(q => `- ${q}`).join('\n');
+      return {
+        answer: `Beleza — pra eu te falar ponto de alimentação/conector/pino sem risco de chutar, preciso de 2-3 detalhes:\n${qBlock}`,
+        sources: [],
+        searchTime: Date.now() - startTime
+      };
     }
     
     // 4. Identifica quais fontes (PDFs) foram encontradas
@@ -283,7 +374,7 @@ REGRA CRÍTICA — NÃO SUGIRA O QUE NÃO CONHECE:
 - NUNCA, JAMAIS, EM NENHUMA CIRCUNSTÂNCIA cite nomes de marcas, modelos, placas ou equipamentos como EXEMPLO entre parênteses ou de qualquer forma.
 - Os manuais disponíveis na base são: ${sourcesList}. SÓ mencione marcas/modelos que constam nesses manuais E SOMENTE quando estiver respondendo sobre eles, NUNCA como sugestão/exemplo.
 - Se precisar pedir o modelo ao técnico, pergunte APENAS: "Qual o modelo do elevador?" — PONTO FINAL. Sem "ex:", sem "como por exemplo", sem lista entre parênteses.
-- É TERMINANTEMENTE PROIBIDO escrever coisas como "(ex: GEN2, Regen, 3300...)" ou "(ex: LCB2, PCC, Miconic...)" ou qualquer lista de sugestão.
+- É TERMINANTEMENTE PROIBIDO escrever qualquer coisa do tipo "(ex: ...)" ou qualquer lista/sugestão entre parênteses.
 - Se o técnico mencionar uma marca/modelo que NÃO está nos seus manuais, diga APENAS que não tem material sobre aquilo e liste os manuais que tem. NÃO pergunte mais nada — deixe o técnico decidir o que quer saber.
 
 REGRA DE TERMINOLOGIA — USE OS MESMOS TERMOS DOS MANUAIS:
@@ -334,13 +425,13 @@ REGRA: Se você tem CERTEZA da resposta com as infos que já tem, responda diret
 
 ADAPTE o formato ao tipo de pergunta:
 
-**Pergunta vaga** (ex: "elevador parado", "porta com problema", "tá dando erro")
+**Pergunta vaga**
 → NÃO responda com solução genérica. Faça 2-3 perguntas direcionadas de forma natural para entender o cenário antes de resolver. Pode dar uma orientação inicial genérica se tiver, mas o foco é coletar info.
 
-**Pergunta simples** (ex: "o que é erro 201?")
+**Pergunta simples**
 → Resposta direta em 2-4 frases, sem títulos nem seções. Conversacional.
 
-**Problema para resolver** (ex: "elevador parado com erro DW")
+**Problema para resolver**
 → Use estrutura mais completa mas com linguagem natural:
 
 Comece com uma frase de contexto empática, depois:
@@ -357,11 +448,11 @@ Comece com uma frase de contexto empática, depois:
 2. Próximo passo com valores exatos (conector, pino, tensão)
 3. Se não resolver, próxima verificação
 
-**Procedimento complexo** (ex: "como fazer DCS Start?")
+**Procedimento complexo**
 → Passo a passo detalhado, mas com tom de quem tá explicando pro colega do lado.
 
 REGRAS DE PRECISÃO (inegociáveis):
-- Pontos de medição: SEMPRE diga conector (ex: P6), pino (ex: pinos 2 e 3), valor (ex: 30VDC)
+- Pontos de medição: SEMPRE diga conector, pino e valor usando EXATAMENTE a identificação que aparece no manual
 - Componentes: use código do manual (K1, Q2, S1)
 - Se o manual tem o valor mas não o pino: "O manual indica [valor] no conector [X], mas o pino específico não tá detalhado — melhor conferir no esquema elétrico"
 
