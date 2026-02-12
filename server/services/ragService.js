@@ -23,6 +23,15 @@ const model = genAI.getGenerativeModel({
   }
 });
 
+// Modelo leve para reescrita de queries (multi-query retrieval)
+const queryRewriter = genAI.getGenerativeModel({ 
+  model: 'gemini-2.0-flash',
+  generationConfig: {
+    temperature: 0.3,
+    maxOutputTokens: 512
+  }
+});
+
 // --- Cache de respostas com TTL ---
 const responseCache = new Map();
 const RESPONSE_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
@@ -44,7 +53,7 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
   const startTime = Date.now();
   
   // Similaridade mínima para considerar um documento relevante
-  const MIN_SIMILARITY = 0.65;
+  const MIN_SIMILARITY = 0.55; // Mais permissivo para capturar mais info relevante
 
   // Verifica cache de respostas (desabilita cache quando há histórico para manter contexto)
   const hasHistory = conversationHistory && conversationHistory.length > 0;
@@ -58,31 +67,71 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
   }
   
   try {
-    // 1. Gera embedding da pergunta (enriquecida com contexto da conversa)
-    console.log('🔍 Gerando embedding da pergunta...');
+    // ═══ MULTI-QUERY RETRIEVAL ═══
+    // Em vez de buscar com uma query só, gera variações para encontrar mais documentos relevantes
+    console.log('🔍 Gerando queries de busca...');
     
-    // Enriquece a busca com contexto recente da conversa para melhorar a busca vetorial
+    // Query original enriquecida com contexto da conversa
     let enrichedQuery = question;
     if (hasHistory) {
       const recentContext = conversationHistory
-        .slice(-6) // últimas 3 trocas (user+model)
+        .slice(-6)
         .filter(m => m.role === 'user')
         .map(m => m.parts[0]?.text || '')
         .join(' ');
       enrichedQuery = `${recentContext} ${question}`.substring(0, 500);
-      console.log(`📝 Query enriquecida com contexto: "${enrichedQuery.substring(0, 80)}..."`);
     }
     
-    const queryEmbedding = await generateEmbedding(enrichedQuery);
+    // Gera 2 variações da pergunta para busca mais ampla
+    let searchQueries = [enrichedQuery];
+    try {
+      const rewritePrompt = `Você é um assistente de busca técnica de elevadores. Dado a pergunta abaixo, gere EXATAMENTE 2 reformulações diferentes da mesma pergunta usando termos técnicos alternativos. Retorne APENAS as reformulações, uma por linha, sem numeração.
+
+Pergunta: "${question}"${hasHistory ? `\nContexto da conversa: ${enrichedQuery.substring(0, 200)}` : ''}
+
+Reformulações:`;
+      
+      const rewriteResult = await queryRewriter.generateContent(rewritePrompt);
+      const alternatives = rewriteResult.response.text()
+        .split('\n')
+        .map(l => l.trim())
+        .filter(l => l.length > 5 && l.length < 300)
+        .slice(0, 2);
+      
+      if (alternatives.length > 0) {
+        searchQueries.push(...alternatives);
+        console.log(`📝 Multi-query: ${searchQueries.length} variações de busca`);
+      }
+    } catch (e) {
+      console.log('⚠️ Reescrita de query falhou, usando query original');
+    }
     
-    // 2. Busca documentos similares (com filtro de marca se disponível)
-    console.log(`📚 Buscando documentos relevantes...${brandFilter ? ` (filtro: ${brandFilter})` : ' (sem filtro de marca)'}`);
-    const allDocs = await searchSimilar(queryEmbedding, topK, brandFilter);
+    // ═══ BUSCA PARALELA COM TODAS AS QUERIES ═══
+    console.log(`📚 Buscando documentos...${brandFilter ? ` (filtro: ${brandFilter})` : ''}`);
     
-    // 3. Filtra documentos com similaridade mínima
-    const relevantDocs = allDocs.filter(doc => doc.similarity >= MIN_SIMILARITY);
+    const allResults = new Map(); // id -> {doc, maxSimilarity}
     
-    console.log(`📊 ${allDocs.length} docs encontrados, ${relevantDocs.length} acima do threshold (${MIN_SIMILARITY * 100}%)`);
+    for (const query of searchQueries) {
+      const queryEmb = await generateEmbedding(query);
+      const docs = await searchSimilar(queryEmb, topK * 2, brandFilter); // Busca mais docs por query
+      
+      for (const doc of docs) {
+        const docId = doc.metadata?.chunkIndex + '_' + (doc.metadata?.source || '');
+        const existing = allResults.get(docId);
+        if (!existing || doc.similarity > existing.similarity) {
+          allResults.set(docId, doc);
+        }
+      }
+    }
+    
+    // Converte para array e ordena por similaridade
+    const mergedDocs = Array.from(allResults.values())
+      .sort((a, b) => b.similarity - a.similarity);
+    
+    // ═══ FILTRA POR SIMILARIDADE MÍNIMA ═══
+    const relevantDocs = mergedDocs.filter(doc => doc.similarity >= MIN_SIMILARITY);
+    
+    console.log(`📊 ${mergedDocs.length} docs únicos encontrados, ${relevantDocs.length} acima do threshold (${MIN_SIMILARITY * 100}%)`);
     if (relevantDocs.length > 0) {
       console.log(`   Top sim: ${Math.round(relevantDocs[0].similarity * 100)}%, Bottom sim: ${Math.round(relevantDocs[relevantDocs.length - 1].similarity * 100)}%`);
     }
@@ -98,15 +147,31 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
       };
     }
     
+    // ═══ SELECIONA OS MELHORES DOCUMENTOS (diversidade de fontes) ═══
+    // Garante que documentos de diferentes fontes apareçam (não só do mesmo PDF)
+    const MAX_CONTEXT_DOCS = 15; // Mais contexto = respostas mais completas
+    const selectedDocs = [];
+    const sourceCounts = {};
+    const MAX_PER_SOURCE = 8; // Máximo de chunks de um mesmo PDF
+    
+    for (const doc of relevantDocs) {
+      if (selectedDocs.length >= MAX_CONTEXT_DOCS) break;
+      const source = doc.metadata?.source || 'unknown';
+      sourceCounts[source] = (sourceCounts[source] || 0) + 1;
+      if (sourceCounts[source] <= MAX_PER_SOURCE) {
+        selectedDocs.push(doc);
+      }
+    }
+    
     // 4. Identifica quais fontes (PDFs) foram encontradas
-    const sourcesFound = [...new Set(relevantDocs.map(d => d.metadata?.source || 'Desconhecido'))];
+    const sourcesFound = [...new Set(selectedDocs.map(d => d.metadata?.source || 'Desconhecido'))];
     const sourcesList = sourcesFound.map(s => {
       const clean = s.replace(/^\d+-\d+-/, '').replace(/\.pdf$/i, '');
       return clean;
     }).join(', ');
     
     // 5. Monta o contexto - inclui a fonte de cada trecho
-    const context = relevantDocs.map((doc, i) => {
+    const context = selectedDocs.map((doc, i) => {
       const sourceName = (doc.metadata?.source || 'Desconhecido').replace(/^\d+-\d+-/, '').replace(/\.pdf$/i, '');
       return `[FONTE: ${sourceName}]\n${doc.content}`;
     }).join('\n\n---\n\n');
@@ -281,14 +346,14 @@ ${context}
     // 9. Retorna resposta formatada com metadados
     const response = {
       answer,
-      sources: relevantDocs.map(doc => ({
+      sources: selectedDocs.map(doc => ({
         source: doc.metadata?.source || 'Desconhecido',
         title: doc.metadata?.title || '',
         excerpt: doc.content.substring(0, 200) + '...',
         similarity: Math.round(doc.similarity * 100)
       })),
       searchTime: endTime - startTime,
-      documentsFound: relevantDocs.length
+      documentsFound: selectedDocs.length
     };
 
     // Salva no cache (somente se não tem histórico)
