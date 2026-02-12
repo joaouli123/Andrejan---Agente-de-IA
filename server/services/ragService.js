@@ -316,6 +316,16 @@ function buildClarifyingQuestions(question, hasHistory, signals) {
   return questions.slice(0, 3);
 }
 
+function extractConnectorTokens(text) {
+  if (!text) return [];
+  return Array.from(
+    new Set(
+      (String(text).toUpperCase().match(/\b(?:CN|J|P)\s*-?\s*\d{1,3}\b/g) || [])
+        .map(s => s.replace(/\s+/g, ''))
+    )
+  );
+}
+
 /**
  * Realiza busca RAG completa: busca contexto relevante e gera resposta
  * @param {string} question - Pergunta do usuário
@@ -520,15 +530,21 @@ Pra eu cravar os pinos sem chute, me manda uma destas coisas:
       }
     }
 
-    // Se a pergunta exige orientação elétrica/jumper e ainda não temos sinais mínimos (modelo/placa), pergunta antes de orientar.
-    // Isso evita respostas perigosas mesmo quando existe algum contexto parecido.
+    // Se a pergunta exige orientação elétrica/jumper e ainda não temos sinais mínimos (modelo/placa),
+    // só pergunta quando REALMENTE faltar evidência. Evita bloquear perguntas já específicas (ex.: J9/CN1/P35).
     const needsHardwareSpecific = /tens[aã]o|alimenta|jumper|bypass|med(i|iç)[aã]o|medir|conector|pino|pinagem|reset|drive|inversor/i.test(question);
     const hasBoard = (signals.boardTokens || []).length > 0;
-    if (needsHardwareSpecific && !hasBoard) {
-      const questions = buildClarifyingQuestions(question, hasHistory, signals);
-      const qBlock = questions.map(q => `- ${q}`).join('\n');
+
+    const questionConnectorTokens = extractConnectorTokens(question);
+    const docsHaveConnectorTokens = relevantDocs.some(d => extractConnectorTokens(`${d?.metadata?.title || ''} ${d?.content || ''}`).length > 0);
+    const pinoutHasEvidence = pinoutQuery && (docsHaveConnectorTokens || questionConnectorTokens.length > 0);
+
+    if (needsHardwareSpecific && !hasBoard && !pinoutHasEvidence) {
+      const singleQuestion = hasHistory
+        ? 'Qual a placa exata (nome escrito na placa/diagnóstico) para eu te passar o ponto sem risco?'
+        : 'Qual o modelo + nome da placa para eu te passar o ponto sem risco?';
       return {
-        answer: `Beleza — pra eu te falar ponto de alimentação/conector/pino sem risco de chutar, preciso de 2-3 detalhes:\n${qBlock}`,
+        answer: `Beleza — antes de te passar ponto/conector/pino sem risco de chute, me confirma só 1 coisa:\n- ${singleQuestion}`,
         sources: [],
         searchTime: Date.now() - startTime
       };

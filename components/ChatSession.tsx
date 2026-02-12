@@ -388,8 +388,8 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
                                     ul: ({node, ...props}) => <ul className="mb-4 ml-1 space-y-2 list-none" {...props} />,
                                     ol: ({node, ...props}) => <ol className="mb-4 ml-1 space-y-2 list-decimal list-inside" {...props} />,
                                     li: ({node, children, ...props}) => (
-                                      <li className="flex items-start gap-2.5 leading-7 text-slate-600" {...props}>
-                                        <span className="text-blue-500 mt-1.5 flex-shrink-0">•</span>
+                                      <li className="flex items-center gap-2.5 leading-7 text-slate-600" {...props}>
+                                        <span className="text-blue-500 leading-none flex-shrink-0">•</span>
                                         <span>{children}</span>
                                       </li>
                                     ),
