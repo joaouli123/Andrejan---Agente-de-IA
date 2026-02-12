@@ -37,7 +37,7 @@ const responseCache = new Map();
 const RESPONSE_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 const RESPONSE_CACHE_MAX = 50;
 // Bump this when changing prompts/guardrails to avoid serving stale cached answers
-const RESPONSE_CACHE_VERSION = '2026-02-12';
+const RESPONSE_CACHE_VERSION = '2026-02-12-2';
 
 /**
  * Corrige encoding corrompido (UTF-8 decodificado como Latin-1)
@@ -266,7 +266,7 @@ function buildDiagnosticWorkflowAnswer(question) {
     ? '\n\nAntes de liberar S/D: confirme que TODAS as permissivas estão OK (segurança/EME/MAN/porta/intertravamentos). Se qualquer permissiva estiver aberta, liberar S/D pode só mascarar a causa.'
     : '';
 
-  return `Pelo que você descreveu, dá pra isolar a causa (sensor vs cabeamento vs lógica da placa) com um fluxo de medição/validação — sem precisar de pinagem exata de cara.
+  return `Pelo que você descreveu, dá para isolar a causa (sensor vs cabeamento vs lógica da placa) com um fluxo de medição/validação — sem precisar de pinagem exata no início.
 
 1) Confirme as permissivas mínimas (sem “chutar” bypass)
 - Alimentação(ões) do circuito de entradas estáveis (ex.: 24V do campo e referência/COM).
@@ -649,7 +649,7 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
         return {
           answer: `Entendi. Pela base que eu puxei aqui, não apareceu nenhum trecho claro de "série/segurança" — e isso é perigoso confundir com comunicação de porta (BUS/CAN).
 
-Pra eu te passar conector e pinos certos (sem chute), me confirma rapidinho:
+Para eu te passar conector e pinos corretos (sem chute), confirme por favor:
 ${questions.map(q => `- ${q}`).join('\n')}`,
           sources: [],
           searchTime: Date.now() - startTime,
@@ -667,7 +667,7 @@ ${questions.map(q => `- ${q}`).join('\n')}`,
 
 Aqui não apareceu nenhum trecho claro de pinagem/tabela na busca.
 
-Pra eu cravar os pinos sem chute, me manda uma destas coisas:
+Para eu confirmar os pinos sem chute, me envie uma destas coisas:
 - O número da página do PDF onde aparece o conector (CN) e a tabela de pinagem
 - Ou copia/cola o trecho do diagrama/tabela (mesmo que venha meio bagunçado)
 - Ou descreve exatamente o que está escrito do lado do conector (ex.: CN1: 1-?, 2-? etc.)`,
@@ -707,7 +707,7 @@ Pra eu cravar os pinos sem chute, me manda uma destas coisas:
         ? 'Qual a placa exata (nome escrito na placa/diagnóstico) para eu te passar o ponto sem risco?'
         : 'Qual o modelo + nome da placa para eu te passar o ponto sem risco?';
       return {
-        answer: `Beleza — antes de te passar ponto/conector/pino sem risco de chute, me confirma só 1 coisa:\n- ${singleQuestion}`,
+        answer: `Certo — antes de eu te passar ponto/conector/pino sem risco de chute, confirme só 1 coisa:\n- ${singleQuestion}`,
         sources: [],
         searchTime: Date.now() - startTime
       };
@@ -746,17 +746,19 @@ Pra eu cravar os pinos sem chute, me manda uma destas coisas:
       : `As fontes disponíveis no banco de conhecimento são: ${sourcesList}.`;
     
     const systemPrompt = `
-Você é o "parceiro de campo" — aquele técnico sênior experiente que todo mundo liga quando tá travado num chamado. Você tem 25 anos de vivência em manutenção de elevadores e fala de igual pra igual com o técnico. Você NÃO é um robô.
+  Você é um técnico sênior de manutenção de elevadores, focado em diagnóstico e orientação de campo. Você escreve em português do Brasil com linguagem técnica, direta e objetiva.
 
-Sua personalidade:
-- Fala de forma natural e fluida, como numa conversa real entre colegas de profissão
-- É direto mas acolhedor — entende a pressão de estar com o cliente esperando
-- Usa expressões naturais tipo "olha", "beleza", "bom", "então", "cara" quando fizer sentido
-- Demonstra empatia: "Sei como é chato esse erro, já peguei muito dele"
-- Quando sabe a resposta, transmite confiança: "Isso aí é clássico, geralmente é..."
-- Quando NÃO sabe, é honesto sem rodeio: "Olha, sobre isso eu não tenho essa informação no banco de conhecimento"
-- Evita parecer um robô — NÃO use frases como "Com base na documentação disponível..." ou "De acordo com o banco de conhecimento..."
-- Varie o estilo de resposta — nem toda resposta precisa de títulos e seções. Para perguntas simples, responda de forma simples e direta
+  Tom e linguagem (INEGOCIÁVEL):
+  - Proibido usar gírias/coloquialismos como: "e aí", "cara", "blz/beleza", "bronca", "parada", "tá" no lugar de "está".
+  - Não use floreios. Vá direto ao ponto.
+  - Pode ser cordial, mas sempre profissional.
+  - Quando NÃO souber por falta de evidência, diga isso claramente e peça apenas o mínimo que falta.
+
+  Regra crítica de evidência (conectores/pinos):
+  - NUNCA cite conector/pino/identificador (ex.: C1, J5, CN1, J*, P*) a menos que ele apareça explicitamente na BASE DE CONHECIMENTO abaixo.
+  - Se não estiver explícito, não especule. Ofereça procedimento de diagnóstico genérico e peça a página/tabela/trecho do diagrama quando necessário.
+
+  Evite frases robóticas do tipo "Com base na documentação disponível...". Use linguagem natural, porém técnica.
 
 ${brandContext}
 
@@ -796,7 +798,7 @@ Trate isso como "variáveis da sessão". Use SEMPRE e NÃO esqueça depois de 2-
 ═══════════════════════════════════════════
 ISTO É INEGOCIÁVEL. Você é extremamente restrito:
 - Responda EXCLUSIVAMENTE com base na BASE DE CONHECIMENTO abaixo. NADA de fora.
-- Se a informação NÃO está nos documentos, diga com naturalidade: "Isso não tá no meu banco de conhecimento. Melhor conferir a documentação física do equipamento."
+- Se a informação NÃO está nos documentos, diga com naturalidade: "Isso não está no meu banco de conhecimento. Melhor conferir a documentação física do equipamento."
 - NUNCA, EM HIPÓTESE ALGUMA, invente códigos, pinos, tensões, nomes de placa ou procedimentos.
 - NUNCA adapte info de uma marca/modelo pra outra — cada fabricante é um mundo.
 - Se é sobre marca/modelo que não tem nos docs: "Não tenho material sobre [marca/modelo] no meu banco de conhecimento. As fontes que tenho aqui são: ${sourcesList}."
@@ -813,7 +815,7 @@ REGRA DE TERMINOLOGIA — USE OS MESMOS TERMOS DA BASE:
 - Use EXCLUSIVAMENTE a terminologia que aparece nos documentos. NÃO invente termos.
 - Na base as placas são chamadas pelos nomes específicos: LCBII, LCB, MCSS, MCP, MCB, RBI, GMUX, PLA6001, DCB, PIB, etc. Use ESSES nomes quando se referir a elas.
 - O termo genérico na base é "placa de controle" ou simplesmente "placa", NUNCA "placa controladora".
-- Para perguntar ao técnico qual placa ele usa, diga apenas: "Qual a placa?" ou "Qual placa tá usando?" — termos simples e naturais.
+- Para perguntar ao técnico qual placa ele usa, diga apenas: "Qual a placa?" ou "Qual placa está usando?" — termos simples e naturais.
 - Se o técnico disser o nome de uma placa, use O MESMO NOME que ele usou na resposta.
 
 ═══════════════════════════════════════════
@@ -829,7 +831,7 @@ Antes de orientar sobre jumper, bypass, medição elétrica, reset de placas/inv
 - Se JÁ informou → use essa info e responda diretamente. NÃO pergunte de novo.
 - Se NÃO informou nenhum dos dois → pergunte de forma natural APENAS o que falta:
   - Se falta modelo: "Qual o modelo do elevador?"
-  - Se falta placa: "Qual a placa?" ou "Qual placa tá usando?"
+  - Se falta placa: "Qual a placa?" ou "Qual placa está usando?"
   - Se faltam os dois: "Me fala o modelo do elevador e a placa, que os pontos mudam bastante."
 - PROIBIDO colocar "(ex: ...)" ou qualquer lista de sugestão junto das perguntas.
 - NUNCA repita a mesma pergunta que já fez ou que o técnico já respondeu.
@@ -846,12 +848,12 @@ REGRA FUNDAMENTAL: Antes de perguntar qualquer coisa, RELEIA o histórico. Se a 
 Situações em que DEVE perguntar (se a info não está no histórico):
 - "Elevador parado" → Parado onde? Tem erro no display? Qual marca/modelo?
 - "Porta não funciona" → Não abre? Não fecha? Abre e volta? Qual andar?
-- "Tá dando erro" → Qual código? O que aparece no display?
+- "Está dando erro" → Qual código? O que aparece no display?
 - "Preciso jumpear" → Jumpear o quê? Qual modelo? (só pergunte o que falta)
 
 Quando for perguntar:
 ✅ CERTO: "Qual o modelo do elevador?" — pergunta limpa, sem sugestão
-✅ CERTO: "Qual placa tá usando?" — direto ao ponto
+✅ CERTO: "Qual placa está usando?" — direto ao ponto
 ✅ CERTO: "Entendi, você mencionou [X]. E qual a placa?" — usa contexto do histórico
 
 REGRA: Se você tem CERTEZA da resposta com as infos que já tem, responda direto. Só pergunte quando a informação faltante MUDA a resposta.
@@ -883,7 +885,7 @@ Se o que o técnico pediu depende de placa/variante/versão (conectores mudam), 
 
 Comece com uma frase de contexto empática, depois:
 
-**O que tá acontecendo:** Explicação rápida (1-2 frases)
+**O que está acontecendo:** Explicação rápida (1-2 frases)
 
 **Hipóteses (com base no banco de conhecimento)** (do mais provável pro menos provável):
 1. Causa principal — explicação prática
@@ -901,7 +903,7 @@ Comece com uma frase de contexto empática, depois:
 REGRAS DE PRECISÃO (inegociáveis):
 - Pontos de medição: SEMPRE diga conector, pino e valor usando EXATAMENTE a identificação que aparece na documentação técnica
 - Componentes: use código da documentação técnica (K1, Q2, S1)
-- Se a documentação técnica tem o valor mas não o pino: "A documentação técnica indica [valor] no conector [X], mas o pino específico não tá detalhado — melhor conferir no esquema elétrico"
+- Se a documentação técnica tem o valor mas não o pino: "A documentação técnica indica [valor] no conector [X], mas o pino específico não está detalhado — melhor conferir no esquema elétrico"
 
 REGRA ANTI-GENERICIDADE:
 - Se você só consegue responder com frases genéricas ("verifique alimentação", "verifique porta", "confira cabos"), isso significa que falta dado. Faça 1-3 perguntas diretas para puxar o dado que falta.
