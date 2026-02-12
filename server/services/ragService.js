@@ -14,7 +14,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // Modelo com leve naturalidade na linguagem, mas fiel aos dados
 const model = genAI.getGenerativeModel({ 
-  model: 'gemini-2.0-flash',
+  model: 'gemini-2.5-flash',
   generationConfig: {
     temperature: 0.15,   // Leve variação para linguagem natural (sem inventar dados)
     topP: 0.4,           // Permite variação de linguagem mas prioriza precisão
@@ -36,6 +36,8 @@ const queryRewriter = genAI.getGenerativeModel({
 const responseCache = new Map();
 const RESPONSE_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 const RESPONSE_CACHE_MAX = 50;
+// Bump this when changing prompts/guardrails to avoid serving stale cached answers
+const RESPONSE_CACHE_VERSION = '2026-02-11';
 
 /**
  * Corrige encoding corrompido (UTF-8 decodificado como Latin-1)
@@ -43,39 +45,75 @@ const RESPONSE_CACHE_MAX = 50;
  */
 function fixEncoding(str) {
   if (!str) return str;
-  try {
-    // Tenta decodificar dupla codificação UTF-8/Latin-1
-    const bytes = new Uint8Array([...str].map(c => c.charCodeAt(0)));
-    const decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-    // Se decodificou com sucesso e é diferente do original, usa o decodificado
-    if (decoded !== str && decoded.length < str.length) return decoded;
-  } catch (e) {
-    // Não é dupla codificação, tenta mapeamento manual dos padrões mais comuns
-  }
-  
-  // Fallback: substituição manual dos padrões mais comuns de corrupção
-  const replacements = {
-    'Ã©': 'é', 'Ã¡': 'á', 'Ã£': 'ã', 'Ã§': 'ç', 'Ãµ': 'õ',
-    'Ã³': 'ó', 'Ãº': 'ú', 'Ã­': 'í', 'Ã¢': 'â', 'Ãª': 'ê',
-    'Ã´': 'ô', 'Ã¼': 'ü', 'Ã': 'À',
-    'Ã\u0089': 'É', 'Ã\u0081': 'Á', 'Ã\u0083': 'Ã', 'Ã\u0087': 'Ç', 
-    'Ã\u0095': 'Õ', 'Ã\u0093': 'Ó', 'Ã\u009A': 'Ú', 'Ã\u008D': 'Í',
-    'Ã\u0082': 'Â', 'Ã\u008A': 'Ê', 'Ã\u0094': 'Ô',
-    // Padrões com Ã seguido de caractere especial
-    'Ã‰': 'É', 'Ã\u0080': 'À', 'Ãƒ': 'Ã', 'Ã‡': 'Ç',
-    'Ã•': 'Õ', 'Ã"': 'Ó', 'Ãš': 'Ú', 'Ã"': 'Ô',
-    'ÃŠ': 'Ê', 'Ã‚': 'Â', 'Ãœ': 'Ü',
+
+  const original = String(str);
+
+  const scoreGarbage = (s) => {
+    const text = String(s);
+    const matches = text.match(/[ÃÂ\uFFFD\u0080-\u009F]/g);
+    return matches ? matches.length : 0;
   };
-  
-  let result = str;
-  for (const [from, to] of Object.entries(replacements)) {
-    result = result.replaceAll(from, to);
+
+  // 1) Melhor tentativa (Node): reinterpreta Latin-1 -> UTF-8
+  // Isso corrige: "TÃ‰CNICO" -> "TÉCNICO", "NOÃ‡Ã•ES" -> "NOÇÕES"
+  try {
+    const candidate = Buffer.from(original, 'latin1').toString('utf8');
+    if (candidate && candidate !== original && scoreGarbage(candidate) < scoreGarbage(original)) {
+      return candidate;
+    }
+  } catch {
+    // segue fallback
+  }
+
+  // 2) Fallback determinístico: substituições ordenadas (não usar mapeamento genérico "Ã" -> ...)
+  const replacements = [
+    ['Ã\u0089', 'É'],
+    ['Ã\u0081', 'Á'],
+    ['Ã\u008D', 'Í'],
+    ['Ã\u0093', 'Ó'],
+    ['Ã\u0095', 'Õ'],
+    ['Ã\u009A', 'Ú'],
+    ['Ã\u0087', 'Ç'],
+    ['Ã\u0083', 'Ã'],
+    ['Ã\u0082', 'Â'],
+    ['Ã\u008A', 'Ê'],
+    ['Ã\u0094', 'Ô'],
+    ['Ã‰', 'É'],
+    ['ÃÁ', 'Á'],
+    ['ÃÍ', 'Í'],
+    ['Ã“', 'Ó'],
+    ['Ã•', 'Õ'],
+    ['Ãš', 'Ú'],
+    ['Ã‡', 'Ç'],
+    ['Ãƒ', 'Ã'],
+    ['Ã‚', 'Â'],
+    ['ÃŠ', 'Ê'],
+    ['Ã”', 'Ô'],
+    ['Ã©', 'é'],
+    ['Ã¡', 'á'],
+    ['Ã£', 'ã'],
+    ['Ã§', 'ç'],
+    ['Ãµ', 'õ'],
+    ['Ã³', 'ó'],
+    ['Ãº', 'ú'],
+    ['Ã­', 'í'],
+    ['Ã¢', 'â'],
+    ['Ãª', 'ê'],
+    ['Ã´', 'ô'],
+    ['Ã¼', 'ü'],
+    // "Â" sobrando (comum em dupla decodificação)
+    ['Â', ''],
+  ];
+
+  let result = original;
+  for (const [from, to] of replacements) {
+    result = result.split(from).join(to);
   }
   return result;
 }
 
 function getResponseCacheKey(question, brandFilter) {
-  return `${(question || '').trim().toLowerCase().substring(0, 200)}|${brandFilter || ''}`;
+  return `${RESPONSE_CACHE_VERSION}|${(question || '').trim().toLowerCase().substring(0, 200)}|${brandFilter || ''}`;
 }
 
 const BOARD_TOKENS = [
@@ -474,7 +512,18 @@ ${context}
     
     const fullPrompt = `${systemPrompt}\n\nPERGUNTA DO TÉCNICO: ${question}`;
     const result = await model.generateContent(fullPrompt);
-    const answer = result.response.text();
+    let answer = result.response.text();
+
+    // Sanitização de saída (última linha de defesa):
+    // - Remove exemplos/sugestões no formato "(ex: ...)" ou "ex: ..." que podem induzir erro
+    // - Normaliza terminologia para bater com os manuais
+    answer = answer
+      .replace(/\(\s*ex\s*:\s*[^)]+\)/gi, '')
+      .replace(/\bex\s*:\s*[^\n]+/gi, '')
+      .replace(/placa\s+controladora/gi, 'placa')
+      .replace(/[ \t]{2,}/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
     
     const endTime = Date.now();
     

@@ -634,7 +634,7 @@ export default function AdminDashboard() {
                           <div className="flex gap-2 mb-3">
                             <input
                               type="text"
-                              placeholder="Nome do modelo (ex: 3300, Gen2...)"
+                              placeholder="Nome do modelo (como aparece no manual/etiqueta)"
                               className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
                               value={newModelName}
                               onChange={e => setNewModelName(e.target.value)}
