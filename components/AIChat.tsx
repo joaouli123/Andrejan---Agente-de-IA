@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Cpu, AlertTriangle, Loader2, RotateCcw } from 'lucide-react';
+import { Send, Cpu, AlertTriangle, RotateCcw } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { getDiagnostic } from '../services/geminiService';
 
@@ -130,8 +130,12 @@ const AIChat: React.FC = () => {
         {isLoading && (
           <div className="flex justify-start">
              <div className="flex items-center space-x-2 bg-white px-4 py-3 rounded-full shadow-sm border border-slate-200 ml-12">
-                <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />
-                <span className="text-slate-500 text-sm">Analisando dados técnicos...</span>
+                <div className="flex items-end gap-1">
+                  <span className="w-2 h-2 rounded-full bg-blue-600 animate-bounce" style={{ animationDelay: '0ms', animationDuration: '1.4s' }} />
+                  <span className="w-2 h-2 rounded-full bg-blue-600 animate-bounce" style={{ animationDelay: '180ms', animationDuration: '1.4s' }} />
+                  <span className="w-2 h-2 rounded-full bg-blue-600 animate-bounce" style={{ animationDelay: '360ms', animationDuration: '1.4s' }} />
+                </div>
+                <span className="text-slate-500 text-sm">escrevendo...</span>
              </div>
           </div>
         )}
