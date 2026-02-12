@@ -171,6 +171,28 @@ const PINOUT_KEYWORDS = [
   'diagrama',
 ];
 
+const BRAND_CANONICAL_MAP = [
+  { canonical: 'Orona', aliases: ['orona', 'arca'] },
+  { canonical: 'Otis', aliases: ['otis'] },
+  { canonical: 'Schindler', aliases: ['schindler'] },
+  { canonical: 'Sectron', aliases: ['sectron'] },
+  { canonical: 'Thyssen', aliases: ['thyssen', 'tk', 'tke'] },
+  { canonical: 'Atlas', aliases: ['atlas'] },
+];
+
+function detectBrandsInText(text) {
+  const normalized = normalizeText(text || '');
+  if (!normalized) return [];
+
+  const found = new Set();
+  for (const brand of BRAND_CANONICAL_MAP) {
+    if (brand.aliases.some(alias => normalized.includes(normalizeText(alias)))) {
+      found.add(brand.canonical);
+    }
+  }
+  return [...found];
+}
+
 function normalizeText(s) {
   return (s || '')
     .toString()
@@ -340,9 +362,47 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
   // Similaridade mínima para considerar um documento relevante
   const MIN_SIMILARITY = 0.55; // Mais permissivo para capturar mais info relevante
 
+  // Blindagem por marca: nunca mistura fabricantes quando houver ambiguidade
+  const historyText = (conversationHistory || [])
+    .map(m => m?.parts?.[0]?.text || '')
+    .filter(Boolean)
+    .join(' ');
+
+  const explicitBrands = detectBrandsInText(`${question || ''} ${historyText}`);
+  const configuredBrandFilter = (brandFilter || '').toString().trim();
+  let effectiveBrandFilter = configuredBrandFilter;
+
+  if (!effectiveBrandFilter) {
+    if (explicitBrands.length === 1) {
+      effectiveBrandFilter = explicitBrands[0];
+    } else if (explicitBrands.length > 1) {
+      return {
+        answer: `Pra não misturar manual de marcas diferentes, preciso confirmar a marca antes de responder:\n- Qual marca é esse equipamento (Orona, Otis, Schindler, Sectron, etc.)?`,
+        sources: [],
+        searchTime: Date.now() - startTime,
+      };
+    }
+  }
+
+  if (!effectiveBrandFilter) {
+    const indexedRaw = await Promise.resolve(getIndexedSources?.() || []);
+    const indexed = Array.isArray(indexedRaw) ? indexedRaw : [];
+    const indexedBrands = detectBrandsInText(indexed.join(' '));
+
+    if (indexedBrands.length === 1) {
+      effectiveBrandFilter = indexedBrands[0];
+    } else if (indexedBrands.length > 1) {
+      return {
+        answer: `Pra te responder com precisão e sem misturar fabricante, me confirma só a marca do equipamento.`,
+        sources: [],
+        searchTime: Date.now() - startTime,
+      };
+    }
+  }
+
   // Verifica cache de respostas (desabilita cache quando há histórico para manter contexto)
   const hasHistory = conversationHistory && conversationHistory.length > 0;
-  const cacheKey = getResponseCacheKey(question, brandFilter);
+  const cacheKey = getResponseCacheKey(question, effectiveBrandFilter);
   if (!hasHistory) {
     const cached = responseCache.get(cacheKey);
     if (cached && (Date.now() - cached.timestamp < RESPONSE_CACHE_TTL)) {
@@ -360,7 +420,7 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
     console.log('🔍 Gerando queries de busca...');
     
     const signals = extractSearchSignals(question, conversationHistory);
-    const sessionState = extractSessionState(question, conversationHistory, brandFilter, signals);
+    const sessionState = extractSessionState(question, conversationHistory, effectiveBrandFilter, signals);
 
     // Query original enriquecida com contexto + sinais (placa/erro) para melhorar recall
     let enrichedQuery = question;
@@ -423,13 +483,13 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
     }
     
     // ═══ BUSCA PARALELA COM TODAS AS QUERIES ═══
-    console.log(`📚 Buscando documentos...${brandFilter ? ` (filtro: ${brandFilter})` : ''}`);
+    console.log(`📚 Buscando documentos...${effectiveBrandFilter ? ` (filtro: ${effectiveBrandFilter})` : ''}`);
     
     const allResults = new Map(); // id -> {doc, maxSimilarity}
     
     for (const query of searchQueries) {
       const queryEmb = await generateEmbedding(query);
-      const docs = await searchSimilar(queryEmb, topK * 2, brandFilter); // Busca mais docs por query
+      const docs = await searchSimilar(queryEmb, topK * 2, effectiveBrandFilter); // Busca mais docs por query
       
       for (const doc of docs) {
         const docId = doc.metadata?.chunkIndex + '_' + (doc.metadata?.source || '');
@@ -458,12 +518,15 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
 
     // Se não achou nada relevante, NÃO chuta: faz perguntas para melhorar a busca
     if (relevantDocs.length === 0) {
-      const indexed = (getIndexedSources?.() || []).map(s => fixEncoding((s || '').replace(/^\d+-\d+-/, '').replace(/\.pdf$/i, ''))).filter(Boolean);
+      const indexedRaw = await Promise.resolve(getIndexedSources?.() || []);
+      const indexed = (Array.isArray(indexedRaw) ? indexedRaw : [])
+        .map(s => fixEncoding((s || '').replace(/^\d+-\d+-/, '').replace(/\.pdf$/i, '')))
+        .filter(Boolean);
       const sourcesText = indexed.length ? `Manuais disponíveis aqui: ${indexed.slice(0, 20).join(', ')}.` : 'Nenhum manual parece estar indexado no momento.';
 
       const questions = buildClarifyingQuestions(question, hasHistory, signals);
       const qBlock = questions.map(q => `- ${q}`).join('\n');
-      const brandMsg = brandFilter
+      const brandMsg = effectiveBrandFilter
         ? `Não encontrei trechos relevantes dentro do filtro de marca selecionado.`
         : `Não encontrei trechos relevantes na base para essa pergunta.`;
 
