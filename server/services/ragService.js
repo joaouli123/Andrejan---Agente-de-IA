@@ -37,7 +37,7 @@ const responseCache = new Map();
 const RESPONSE_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 const RESPONSE_CACHE_MAX = 50;
 // Bump this when changing prompts/guardrails to avoid serving stale cached answers
-const RESPONSE_CACHE_VERSION = '2026-02-12-6';
+const RESPONSE_CACHE_VERSION = '2026-02-12-7';
 
 /**
  * Corrige encoding corrompido (UTF-8 decodificado como Latin-1)
@@ -172,18 +172,16 @@ const PINOUT_KEYWORDS = [
   'diagrama',
 ];
 
+// Observação: para LED/piscadas, palavras genéricas (status/fault/led) geram falso-positivo.
+// A validação de evidência usa tabela/legenda e/ou padrão explícito de piscadas.
 const STATUS_INDICATOR_KEYWORDS = [
-  'indicador',
-  'status',
-  'led',
   'pisca',
   'piscando',
-  'piscando rapido',
-  'piscando rapidamente',
+  'piscadas',
   'blink',
-  '4x/s',
-  '10 segundos',
-  'fault',
+  'tabela',
+  'legenda',
+  'codigo',
 ];
 
 const BRAND_CANONICAL_MAP = [
@@ -460,12 +458,39 @@ function isStatusIndicatorQuery(question) {
   return false;
 }
 
-function docsHaveStatusIndicatorEvidence(docs) {
+function docsHaveBlinkLegendEvidence(docs, question) {
   if (!docs || docs.length === 0) return false;
+
+  const rawQuestion = String(question || '');
+  const qHasPerSecond = /(\d+)\s*x\s*\/\s*s/i.test(rawQuestion);
+  const qHasEvery = /(\d+)\s*x\s*a\s*cada\s*(\d+)\s*(s|seg|segundos)/i.test(rawQuestion);
+
+  const blinkPatternRegexes = [];
+  if (qHasPerSecond) {
+    const m = rawQuestion.match(/(\d+)\s*x\s*\/\s*s/i);
+    const n = m ? m[1] : null;
+    if (n) blinkPatternRegexes.push(new RegExp(`\\b${n}\\s*x\\s*\\/\\s*s\\b`, 'i'));
+  }
+  if (qHasEvery) {
+    const m = rawQuestion.match(/(\d+)\s*x\s*a\s*cada\s*(\d+)\s*(s|seg|segundos)/i);
+    const n = m ? m[1] : null;
+    const s = m ? m[2] : null;
+    if (n && s) blinkPatternRegexes.push(new RegExp(`\\b${n}\\s*x\\s*a\\s*cada\\s*${s}\\s*(s|seg|segundos)\\b`, 'i'));
+  }
+
   return docs.some(d => {
-    const t = docText(d);
-    const hits = countHits(t, STATUS_INDICATOR_KEYWORDS.map(normalizeText));
-    return hits >= 2; // exige pelo menos 2 termos (ex.: led + pisca, status + fault)
+    const raw = `${d?.metadata?.title || ''} ${d?.content || ''}`;
+    const norm = normalizeText(raw);
+
+    // Caso 1: existe o MESMO padrão de piscadas explicitamente no texto recuperado
+    if (blinkPatternRegexes.length && blinkPatternRegexes.some(rx => rx.test(raw) || rx.test(norm))) return true;
+
+    // Caso 2: há sinais claros de legenda/tabela de piscadas (sem depender de palavras genéricas)
+    const hasTable = /\b(tabela|legenda)\b/i.test(raw) || /\b(tabela|legenda)\b/i.test(norm);
+    const hasBlinkWord = /\b(pisca|piscando|piscadas|blink)\b/i.test(raw) || /\b(pisca|piscando|piscadas|blink)\b/i.test(norm);
+    const hasNumericPattern = /\b\d+\s*x\s*(\/\s*s|a\s*cada)\b/i.test(raw) || /\b\d+\s*x\s*(\/\s*s|a\s*cada)\b/i.test(norm);
+
+    return hasTable && hasBlinkWord && hasNumericPattern;
   });
 }
 
@@ -951,7 +976,7 @@ Para eu confirmar os pinos sem chute, me envie uma destas coisas:
 
     // Se a pergunta é sobre indicador/LED/padrão de piscadas, só responda significado se houver legenda/tabela explícita na base.
     if (isStatusIndicatorQuery(question)) {
-      const hasIndicatorEvidence = docsHaveStatusIndicatorEvidence(relevantDocs);
+      const hasIndicatorEvidence = docsHaveBlinkLegendEvidence(relevantDocs, question);
       if (!hasIndicatorEvidence) {
         return {
           answer: buildStatusIndicatorClarification(sessionState),
@@ -1258,7 +1283,7 @@ ${context}
 
     if (containsBlinkInterpretation(answer) && isStatusIndicatorQuery(question)) {
       // Interpretação de piscadas/LED exige tabela/legenda no contexto
-      const indicatorOk = docsHaveStatusIndicatorEvidence(selectedDocs);
+      const indicatorOk = docsHaveBlinkLegendEvidence(selectedDocs, question);
       if (!indicatorOk) missingEvidence.push('interpretação de padrão de piscadas/LED');
     }
 
