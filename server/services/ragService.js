@@ -321,7 +321,7 @@ function buildClarifyingQuestions(question, hasHistory, signals) {
 
   const questions = [];
   if (!hasHistory) {
-    questions.push('Qual a marca e o modelo do elevador (como está na etiqueta/manual do equipamento)?');
+    questions.push('Qual a marca e o modelo do elevador (como está na etiqueta/documentação técnica do equipamento)?');
   } else {
     questions.push('Qual é o modelo do elevador (exatamente como aparece no equipamento)?');
   }
@@ -453,7 +453,7 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
     // Gera 2 variações da pergunta para busca mais ampla
     let searchQueries = [enrichedQuery];
     try {
-      const rewritePrompt = `Você é um assistente de BUSCA (não de resposta) para manuais técnicos.
+      const rewritePrompt = `Você é um assistente de BUSCA (não de resposta) para banco de conhecimento técnico.
 
     Tarefa: gere EXATAMENTE 2 reformulações da pergunta para melhorar a recuperação em um banco vetorial.
 
@@ -655,7 +655,7 @@ Sua personalidade:
 - Demonstra empatia: "Sei como é chato esse erro, já peguei muito dele"
 - Quando sabe a resposta, transmite confiança: "Isso aí é clássico, geralmente é..."
 - Quando NÃO sabe, é honesto sem rodeio: "Olha, sobre isso eu não tenho essa informação no banco de conhecimento"
-- Evita parecer um robô — NÃO use frases como "Com base na documentação disponível..." ou "De acordo com os manuais..."
+- Evita parecer um robô — NÃO use frases como "Com base na documentação disponível..." ou "De acordo com o banco de conhecimento..."
 - Varie o estilo de resposta — nem toda resposta precisa de títulos e seções. Para perguntas simples, responda de forma simples e direta
 
 ${brandContext}
@@ -766,7 +766,7 @@ ADAPTE o formato ao tipo de pergunta:
 🧱 SEM ENCHEÇÃO — RESPOSTA DE TÉCNICO
 ═══════════════════════════════════════════
 Isso aqui NÃO é Wikipedia. Regras:
-- NÃO faça checklist óbvio do tipo "verifique se a porta está fechada" a menos que o MANUAL indique esse passo como parte do diagnóstico daquele erro.
+- NÃO faça checklist óbvio do tipo "verifique se a porta está fechada" a menos que a documentação técnica indique esse passo como parte do diagnóstico daquele erro.
 - Cada causa/ação que você citar precisa ter algum gancho no conteúdo da base (termo, componente, conector, sintoma, sequência). Se não tiver, NÃO invente.
 - Se a pergunta pede **tensão/conector/pino** e a base não dá esse ponto com clareza, você NÃO responde genérico — você pede o dado que falta.
 - Seja direto: no máximo 3 hipóteses e 3 ações. Se precisar de mais, é porque falta informação.
@@ -785,7 +785,7 @@ Comece com uma frase de contexto empática, depois:
 
 **O que tá acontecendo:** Explicação rápida (1-2 frases)
 
-**Hipóteses (com base no manual)** (do mais provável pro menos provável):
+**Hipóteses (com base no banco de conhecimento)** (do mais provável pro menos provável):
 1. Causa principal — explicação prática
 2. Segunda causa — explicação prática  
 3. Terceira causa — explicação prática
@@ -799,9 +799,9 @@ Comece com uma frase de contexto empática, depois:
 → Passo a passo detalhado, mas com tom de quem tá explicando pro colega do lado.
 
 REGRAS DE PRECISÃO (inegociáveis):
-- Pontos de medição: SEMPRE diga conector, pino e valor usando EXATAMENTE a identificação que aparece no manual
-- Componentes: use código do manual (K1, Q2, S1)
-- Se o manual tem o valor mas não o pino: "O manual indica [valor] no conector [X], mas o pino específico não tá detalhado — melhor conferir no esquema elétrico"
+- Pontos de medição: SEMPRE diga conector, pino e valor usando EXATAMENTE a identificação que aparece na documentação técnica
+- Componentes: use código da documentação técnica (K1, Q2, S1)
+- Se a documentação técnica tem o valor mas não o pino: "A documentação técnica indica [valor] no conector [X], mas o pino específico não tá detalhado — melhor conferir no esquema elétrico"
 
 REGRA ANTI-GENERICIDADE:
 - Se você só consegue responder com frases genéricas ("verifique alimentação", "verifique porta", "confira cabos"), isso significa que falta dado. Faça 1-3 perguntas diretas para puxar o dado que falta.
@@ -828,7 +828,7 @@ ${context}
 
     // Sanitização de saída (última linha de defesa):
     // - Remove exemplos/sugestões no formato "(ex: ...)" ou "ex: ..." que podem induzir erro
-    // - Normaliza terminologia para bater com os manuais
+    // - Normaliza terminologia para bater com o banco de conhecimento
     answer = answer
       .replace(/\(\s*ex\s*:\s*[^)]+\)/gi, '')
       .replace(/\bex\s*:\s*[^\n]+/gi, '')
