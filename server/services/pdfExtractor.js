@@ -19,17 +19,29 @@ const OCR_TEXT_THRESHOLD = 50;
 // Limiar por página: mesmo PDFs "bons" podem ter páginas de diagramas/tabelas como imagem
 const OCR_TEXT_THRESHOLD_PER_PAGE = 120;
 
-// Cache do worker do Tesseract para reutilização
-let tesseractWorker = null;
+// Pool de workers do Tesseract (CPU-bound) para usar vários cores
+let tesseractWorkers = null;
 
-async function getTesseractWorker() {
-  if (!tesseractWorker) {
-    console.log('   🔤 Iniciando Tesseract OCR (primeira vez)...');
-    tesseractWorker = await Tesseract.createWorker('por+eng', 1, {
-      logger: () => {} // silencioso
-    });
+function getOcrWorkerCount() {
+  const env = parseInt(process.env.OCR_WORKERS || '', 10);
+  if (Number.isFinite(env) && env > 0) return Math.min(env, 8);
+  // Default conservador (i9 aguenta mais, mas OCR consome RAM)
+  return 2;
+}
+
+async function getTesseractWorkers() {
+  if (!tesseractWorkers) {
+    const count = getOcrWorkerCount();
+    console.log(`   🔤 Iniciando Tesseract OCR (pool ${count} workers)...`);
+    tesseractWorkers = await Promise.all(
+      Array.from({ length: count }, () =>
+        Tesseract.createWorker('por+eng', 1, {
+          logger: () => {},
+        })
+      )
+    );
   }
-  return tesseractWorker;
+  return tesseractWorkers;
 }
 
 /**
@@ -190,26 +202,31 @@ export async function extractTextWithOCR(filePath, onProgress) {
   
   try {
     const { pdf } = await import('pdf-to-img');
-    const worker = await getTesseractWorker();
+    const workers = await getTesseractWorkers();
 
     // Melhor para tabelas/diagramas: preserva espaços e usa segmentação mais "blocada"
-    try {
-      await worker.setParameters({
-        preserve_interword_spaces: '1',
-        tessedit_pageseg_mode: '6',
-      });
-    } catch {
-      // ignora se não suportar
+    for (const w of workers) {
+      try {
+        await w.setParameters({
+          preserve_interword_spaces: '1',
+          tessedit_pageseg_mode: '6',
+        });
+      } catch {
+        // ignora se não suportar
+      }
     }
     
     let pageNum = 0;
     let pdfIterator;
     
+    const pdfScale = Number.parseFloat(process.env.PDF_IMG_SCALE || '2.0');
+    const safeScale = Number.isFinite(pdfScale) ? Math.min(Math.max(pdfScale, 1.0), 3.0) : 2.0;
+
     try {
-      pdfIterator = await pdf(dataBuffer, { scale: 2.0 });
+      pdfIterator = await pdf(dataBuffer, { scale: safeScale });
     } catch (pdfImgErr) {
       // Tentar com escala menor se a escala 2.0 falhar
-      console.log(`   ⚠️ pdf-to-img falhou com scale=2.0: ${pdfImgErr.message}`);
+      console.log(`   ⚠️ pdf-to-img falhou com scale=${safeScale}: ${pdfImgErr.message}`);
       console.log(`   🔄 Tentando com scale=1.0...`);
       try {
         pdfIterator = await pdf(dataBuffer, { scale: 1.0 });
@@ -217,7 +234,24 @@ export async function extractTextWithOCR(filePath, onProgress) {
         throw new Error(`pdf-to-img não conseguiu processar: ${pdfImgErr2.message}`);
       }
     }
-    
+
+    const ocrResultsByPage = new Map();
+    const maxPending = Math.max(1, parseInt(process.env.OCR_MAX_PENDING || '', 10) || (workers.length * 2));
+    const pending = [];
+    let nextWorker = 0;
+
+    const runRecognize = async (w, pageNumLocal, pageImage) => {
+      try {
+        const result = await w.recognize(pageImage);
+        const pageText = result.data.text.trim();
+        if (pageText.length > 10) {
+          ocrResultsByPage.set(pageNumLocal, pageText);
+        }
+      } catch (err) {
+        console.warn(`   ⚠️ OCR falhou na página ${pageNumLocal}: ${err.message}`);
+      }
+    };
+
     for await (const pageImage of pdfIterator) {
       pageNum++;
 
@@ -234,20 +268,29 @@ export async function extractTextWithOCR(filePath, onProgress) {
         });
       }
       
-      try {
-        const result = await worker.recognize(pageImage);
-        const pageText = result.data.text.trim();
-        
-        if (pageText.length > 10) {
-          ocrText += `\n--- Página ${pageNum} (OCR) ---\n${pageText}\n`;
-          ocrPages++;
-        }
-        
-        if (pageNum % 10 === 0) {
-          console.log(`   📄 OCR: ${pageNum}/${numPages || '?'} páginas processadas`);
-        }
-      } catch (ocrErr) {
-        console.warn(`   ⚠️ OCR falhou na página ${pageNum}: ${ocrErr.message}`);
+      const w = workers[nextWorker++ % workers.length];
+      const p = runRecognize(w, pageNum, pageImage);
+      pending.push(p);
+      if (pending.length >= maxPending) {
+        // Mantém o pipeline andando sem estourar memória
+        await pending.shift();
+      }
+
+      if (pageNum % 10 === 0) {
+        console.log(`   📄 OCR: ${pageNum}/${numPages || '?'} páginas processadas`);
+      }
+    }
+
+    // Espera terminar o que ficou pendente
+    await Promise.allSettled(pending);
+
+    // Monta o OCR na ordem das páginas
+    const pagesSorted = [...ocrResultsByPage.keys()].sort((a, b) => a - b);
+    for (const pNum of pagesSorted) {
+      const txt = ocrResultsByPage.get(pNum);
+      if (txt && txt.length > 10) {
+        ocrText += `\n--- Página ${pNum} (OCR) ---\n${txt}\n`;
+        ocrPages++;
       }
     }
     
@@ -421,11 +464,8 @@ export async function processDirectory(dirPath, onProgress) {
     }
   }
   
-  // Libera worker do Tesseract se foi usado
-  if (tesseractWorker) {
-    await tesseractWorker.terminate();
-    tesseractWorker = null;
-  }
+  // Libera recursos do OCR (pool)
+  await terminateOCR();
   
   console.log(`\n✨ Total: ${allChunks.length} chunks de ${files.length} arquivos\n`);
   
@@ -436,9 +476,9 @@ export async function processDirectory(dirPath, onProgress) {
  * Libera recursos do Tesseract
  */
 export async function terminateOCR() {
-  if (tesseractWorker) {
-    await tesseractWorker.terminate();
-    tesseractWorker = null;
+  if (tesseractWorkers && Array.isArray(tesseractWorkers)) {
+    await Promise.allSettled(tesseractWorkers.map(w => w.terminate()));
+    tesseractWorkers = null;
   }
 }
 
