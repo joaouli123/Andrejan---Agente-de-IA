@@ -1206,6 +1206,8 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
     const otisHasError = (signals?.errorTokens?.length || 0) > 0 || Boolean(sessionState?.error);
     if (isOtisBrand(effectiveBrandFilter) && !otisHasModel && !otisHasBoard && !otisHasError && isGenericOtisQuestion(question)) {
       const qs = buildOtisGenericGateQuestions(sessionState, signals);
+      telemetryOutcome = 'abstained';
+      telemetryBlockedReason = 'otis_generic_gate_missing_model_or_error';
       return {
         answer: `Para eu responder com precisão no padrão Otis (sem generalização), preciso destas informações:
 ${qs.map(q => `- ${q}`).join('\n')}`,
