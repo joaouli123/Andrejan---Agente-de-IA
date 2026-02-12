@@ -54,13 +54,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     }
   }, [onLogout]);
 
-  const loadSessions = () => {
+    const loadSessions = async () => {
+      await Storage.syncChatsFromDatabase();
       setSessions(Storage.getSessions());
-  };
+    };
 
   useEffect(() => {
     if (user) {
-        loadSessions();
+        void loadSessions();
     }
   }, [currentView, activeSessionId, user]);
 
@@ -68,7 +69,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     try {
         const newSession = Storage.createNewSession(agentId);
         // Refresh sessions immediately so the new one appears in the list
-        setSessions(Storage.getSessions());
+        void loadSessions();
         setActiveSessionId(newSession.id);
         setCurrentView('chat');
         setIsSidebarOpen(false);

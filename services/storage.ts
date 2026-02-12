@@ -7,6 +7,209 @@ const CURRENT_USER_KEY = 'elevex_current_user';
 const ADMIN_USERS_KEY = 'elevex_admin_users';
 const BRANDS_KEY = 'elevex_brands';
 const MODELS_KEY = 'elevex_models';
+const SESSION_DB_ID_MAP_KEY = 'elevex_session_db_id_map';
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CHATS_SYNC_MIN_INTERVAL_MS = 5000;
+
+let chatsSyncPromise: Promise<ChatSession[]> | null = null;
+let lastChatsSyncAt = 0;
+
+type SupabaseChatSessionRow = {
+    id: string;
+    user_id: string;
+    agent_id: string;
+    title: string | null;
+    last_message_at: string | null;
+    preview: string | null;
+    is_archived: boolean | null;
+};
+
+type SupabaseMessageRow = {
+    id: string;
+    session_id: string;
+    role: 'user' | 'model' | null;
+    text: string | null;
+    timestamp?: string | null;
+    created_at?: string | null;
+};
+
+const isUuid = (value?: string | null) => UUID_REGEX.test(String(value || ''));
+
+const getSessionDbIdMap = (): Record<string, string> => {
+    try {
+        const raw = localStorage.getItem(SESSION_DB_ID_MAP_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+};
+
+const saveSessionDbIdMap = (map: Record<string, string>) => {
+    localStorage.setItem(SESSION_DB_ID_MAP_KEY, JSON.stringify(map));
+};
+
+const resolveDatabaseSessionId = (sessionId: string): string => {
+    if (isUuid(sessionId)) return sessionId;
+
+    const map = getSessionDbIdMap();
+    const existing = map[sessionId];
+    if (existing && isUuid(existing)) return existing;
+
+    const generated = generateUuid();
+    map[sessionId] = generated;
+    saveSessionDbIdMap(map);
+    return generated;
+};
+
+const generateUuid = (): string => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID();
+    }
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const random = Math.random() * 16 | 0;
+        const value = c === 'x' ? random : (random & 0x3 | 0x8);
+        return value.toString(16);
+    });
+};
+
+const replaceChatsForUser = (userId: string, sessions: ChatSession[]) => {
+    const allChats = getChats();
+    const others = allChats.filter(c => c.userId !== userId);
+    localStorage.setItem(CHATS_KEY, JSON.stringify([...others, ...sessions]));
+};
+
+const saveChatToDatabase = async (chat: ChatSession): Promise<void> => {
+    const dbSessionId = resolveDatabaseSessionId(chat.id);
+
+    const sessionPayload = {
+        id: dbSessionId,
+        user_id: chat.userId,
+        agent_id: chat.agentId,
+        title: chat.title,
+        last_message_at: chat.lastMessageAt,
+        preview: chat.preview,
+        is_archived: !!chat.isArchived,
+    };
+
+    const { error: upsertError } = await supabase.from('chat_sessions').upsert([sessionPayload]);
+    if (upsertError) return;
+
+    await supabase.from('messages').delete().eq('session_id', dbSessionId);
+    if (!Array.isArray(chat.messages) || chat.messages.length === 0) return;
+
+    const baseMessages = chat.messages.map(message => ({
+        session_id: dbSessionId,
+        role: message.role,
+        text: message.text,
+        timestamp: message.timestamp,
+    }));
+
+    let { error: messageError } = await supabase.from('messages').insert(baseMessages);
+    if (!messageError) return;
+
+    // Compatibilidade com schema antigo (created_at ao invés de timestamp)
+    const fallbackMessages = chat.messages.map(message => ({
+        session_id: dbSessionId,
+        role: message.role,
+        text: message.text,
+        created_at: message.timestamp,
+    }));
+
+    await supabase.from('messages').insert(fallbackMessages);
+};
+
+const deleteChatFromDatabase = async (sessionId: string): Promise<void> => {
+    const dbSessionId = resolveDatabaseSessionId(sessionId);
+    await supabase.from('chat_sessions').delete().eq('id', dbSessionId);
+};
+
+const fetchMessagesForSessions = async (sessionIds: string[]): Promise<SupabaseMessageRow[]> => {
+    if (!sessionIds.length) return [];
+
+    const first = await supabase
+        .from('messages')
+        .select('id,session_id,role,text,timestamp')
+        .in('session_id', sessionIds);
+
+    if (!first.error && first.data) return first.data as SupabaseMessageRow[];
+
+    const fallback = await supabase
+        .from('messages')
+        .select('id,session_id,role,text,created_at')
+        .in('session_id', sessionIds);
+
+    if (!fallback.error && fallback.data) return fallback.data as SupabaseMessageRow[];
+    return [];
+};
+
+export const syncChatsFromDatabase = async (force = false): Promise<ChatSession[]> => {
+    const now = Date.now();
+    if (!force && chatsSyncPromise) return chatsSyncPromise;
+    if (!force && (now - lastChatsSyncAt) < CHATS_SYNC_MIN_INTERVAL_MS) {
+        const user = getUserProfile();
+        return user ? getChats().filter(c => c.userId === user.id) : [];
+    }
+
+    chatsSyncPromise = (async () => {
+        try {
+            const user = getUserProfile();
+            if (!user) return [];
+
+            const { data: sessionsData, error: sessionsError } = await supabase
+                .from('chat_sessions')
+                .select('id,user_id,agent_id,title,last_message_at,preview,is_archived')
+                .eq('user_id', user.id)
+                .order('last_message_at', { ascending: false });
+
+            if (sessionsError || !sessionsData) return [];
+
+            const sessionRows = sessionsData as SupabaseChatSessionRow[];
+            const sessionIds = sessionRows.map(s => s.id).filter(Boolean);
+            const messagesRows = await fetchMessagesForSessions(sessionIds);
+
+            const groupedMessages = new Map<string, Message[]>();
+            for (const row of messagesRows) {
+                const sessionId = String(row.session_id || '');
+                if (!sessionId) continue;
+                const entry: Message = {
+                    id: row.id || generateUuid(),
+                    role: row.role === 'user' ? 'user' : 'model',
+                    text: String(row.text || ''),
+                    timestamp: String(row.timestamp || row.created_at || new Date().toISOString()),
+                };
+                const bucket = groupedMessages.get(sessionId) || [];
+                bucket.push(entry);
+                groupedMessages.set(sessionId, bucket);
+            }
+
+            for (const [, messages] of groupedMessages) {
+                messages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+            }
+
+            const mapped: ChatSession[] = sessionRows.map(row => ({
+                id: row.id,
+                userId: row.user_id,
+                agentId: row.agent_id,
+                title: row.title || 'Conversa',
+                lastMessageAt: row.last_message_at || new Date().toISOString(),
+                preview: row.preview || 'Sem mensagens',
+                isArchived: !!row.is_archived,
+                messages: groupedMessages.get(row.id) || [],
+            }));
+
+            replaceChatsForUser(user.id, mapped);
+            lastChatsSyncAt = Date.now();
+            return mapped;
+        } catch {
+            return [];
+        } finally {
+            chatsSyncPromise = null;
+        }
+    })();
+
+    return chatsSyncPromise;
+};
 
 // --- MOCK PROFILES ---
 const ADMIN_PROFILE: UserProfile = {
@@ -101,6 +304,7 @@ export const saveChat = (chat: ChatSession) => {
         chats.push(chat);
     }
     localStorage.setItem(CHATS_KEY, JSON.stringify(chats));
+    void saveChatToDatabase(chat);
 };
 
 // --- SESSIONS ---
@@ -131,7 +335,7 @@ export const createNewSession = (agentId: string): ChatSession => {
     const agentName = agent?.name || 'Assistente';
     
     const newSession: ChatSession = {
-        id: `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        id: generateUuid(),
         userId: user.id,
         agentId,
         title: `Conversa com ${agentName}`,
@@ -153,6 +357,7 @@ export const deleteSession = (sessionId: string) => {
     if (session && user && (session.userId === user.id || user.isAdmin)) {
         const filtered = chats.filter(c => c.id !== sessionId);
         localStorage.setItem(CHATS_KEY, JSON.stringify(filtered));
+        void deleteChatFromDatabase(sessionId);
     }
 };
 
