@@ -10,7 +10,7 @@ import * as local from './vectorStore.js';
 const QDRANT_URL = (process.env.QDRANT_URL || '').trim();
 const QDRANT_API_KEY = (process.env.QDRANT_API_KEY || '').trim();
 const QDRANT_COLLECTION = (process.env.QDRANT_COLLECTION || 'elevex_documents').trim();
-const VECTOR_SIZE = 768;
+const VECTOR_SIZE = Math.max(1, parseInt(process.env.QDRANT_VECTOR_SIZE || '3072', 10));
 
 function isQdrantEnabled() {
   return Boolean(QDRANT_URL);
@@ -39,11 +39,51 @@ async function qdrantFetch(path, init) {
 async function ensureQdrantCollection() {
   // GET collection (se não existir, cria)
   try {
-    await qdrantFetch(`/collections/${encodeURIComponent(QDRANT_COLLECTION)}`, {
+    const res = await qdrantFetch(`/collections/${encodeURIComponent(QDRANT_COLLECTION)}`, {
       method: 'GET',
       headers: qdrantHeaders(),
     });
+
+    const data = await res.json().catch(() => ({}));
+    const result = data?.result || {};
+    const vectorsConfig = result?.config?.params?.vectors;
+    const pointsCount = Number(result?.points_count || 0);
+
+    let currentSize = null;
+    if (typeof vectorsConfig?.size === 'number') {
+      currentSize = vectorsConfig.size;
+    } else if (vectorsConfig && typeof vectorsConfig === 'object') {
+      const first = Object.values(vectorsConfig)[0];
+      if (first && typeof first.size === 'number') currentSize = first.size;
+    }
+
+    if (currentSize && currentSize !== VECTOR_SIZE) {
+      if (pointsCount > 0) {
+        throw new Error(
+          `Qdrant collection '${QDRANT_COLLECTION}' com dimensão ${currentSize}, mas servidor espera ${VECTOR_SIZE}. ` +
+          `Ajuste QDRANT_VECTOR_SIZE para ${currentSize} ou recrie a coleção.`
+        );
+      }
+
+      // Coleção vazia com dimensão errada: recria automaticamente
+      await qdrantFetch(`/collections/${encodeURIComponent(QDRANT_COLLECTION)}`, {
+        method: 'DELETE',
+        headers: qdrantHeaders(),
+      });
+
+      await qdrantFetch(`/collections/${encodeURIComponent(QDRANT_COLLECTION)}`, {
+        method: 'PUT',
+        headers: qdrantHeaders(),
+        body: JSON.stringify({
+          vectors: {
+            size: VECTOR_SIZE,
+            distance: 'Cosine',
+          },
+        }),
+      });
+    }
   } catch (e) {
+    if (String(e?.message || '').includes('com dimensão')) throw e;
     // Create
     await qdrantFetch(`/collections/${encodeURIComponent(QDRANT_COLLECTION)}`, {
       method: 'PUT',
