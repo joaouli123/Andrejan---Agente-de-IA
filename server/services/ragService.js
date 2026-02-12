@@ -37,7 +37,7 @@ const responseCache = new Map();
 const RESPONSE_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 const RESPONSE_CACHE_MAX = 50;
 // Bump this when changing prompts/guardrails to avoid serving stale cached answers
-const RESPONSE_CACHE_VERSION = '2026-02-12-5';
+const RESPONSE_CACHE_VERSION = '2026-02-12-6';
 
 /**
  * Corrige encoding corrompido (UTF-8 decodificado como Latin-1)
@@ -318,7 +318,7 @@ function isBusVsSafetyDisambiguationQuery(question) {
 function buildBusVsSafetyAnswer() {
   return `BUS/CAN (C_L/C_H) e “série/cadeia de segurança” são coisas diferentes:
 
-- BUS/CAN: comunicação de dados entre módulos (ex.: operador de porta). Mesmo com tensões presentes no barramento, isso não confirma cadeia de segurança.
+- BUS/CAN: comunicação de dados entre módulos, como o operador de porta. Mesmo com tensões presentes no barramento, isso não confirma cadeia de segurança.
 - Série/cadeia de segurança: circuito de permissivas (contatos em série). O que importa é o estado (aberto/fechado) e se a controladora reconhece “segurança OK”.
 
 Como diferenciar na prática:
@@ -339,6 +339,53 @@ function stripConnectorLikeTokens(text) {
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+function normalizeCompact(s) {
+  return normalizeText(s || '').replace(/[^a-z0-9]+/g, '');
+}
+
+function extractVoltageTokens(text) {
+  const raw = String(text || '');
+  const matches = raw.match(/\b\d{1,4}(?:[\.,]\d{1,2})?\s*(?:vdc|vac|vcc|v)\b/gi) || [];
+  return Array.from(new Set(matches.map(m => m.replace(',', '.').toLowerCase().replace(/\s+/g, ''))));
+}
+
+function extractFaultCodeTokens(text) {
+  const raw = String(text || '');
+  const tokens = [];
+
+  // fault 29, fault29
+  for (const m of raw.match(/\bfault\s*\d{1,4}\b/gi) || []) tokens.push(m);
+
+  // erro 597, código 597, codigo 597
+  for (const m of raw.match(/\b(?:erro|c[oó]digo)\s*\d{1,4}\b/gi) || []) tokens.push(m);
+
+  // E123, E-123
+  for (const m of raw.match(/\bE\s*-?\s*\d{2,4}\b/g) || []) tokens.push(m);
+
+  return Array.from(new Set(tokens.map(t => t.toLowerCase().replace(/\s+/g, ''))));
+}
+
+function containsRiskyActionLanguage(text) {
+  return /\b(jumper|bypass|pontear|ponte|desativar\s+seguran|anular\s+seguran|burlar\s+seguran)\b/i.test(text || '');
+}
+
+function containsBlinkInterpretation(text) {
+  return /\b(pisca|piscando|blink|4x\/s|\d+\s*x\s*a\s*cada\s*\d+\s*(s|seg|segundos))\b/i.test(text || '');
+}
+
+function buildUnsafeUngroundedReply(sessionState, missingItems) {
+  const modelLine = sessionState?.model ? `Modelo: ${sessionState.model}.` : '';
+  const items = (missingItems || []).slice(0, 4).join(', ');
+  return `Para segurança, eu não vou afirmar detalhes específicos sem evidência explícita no banco de conhecimento.
+
+Não encontrei no contexto recuperado suporte literal para: ${items}.${modelLine ? `\n${modelLine}` : ''}
+
+Envie uma destas opções para eu responder com precisão:
+- página/foto do manual onde aparece a tabela/legenda/procedimento correspondente
+- ou copie e cole o trecho exato do manual/diagrama
+- e confirme o nome do módulo/placa envolvido (como está escrito na placa) e o código/mensagem no display (se houver)`;
 }
 
 function buildDiagnosticWorkflowAnswer(question) {
@@ -1186,16 +1233,44 @@ ${context}
       answer = stripConnectorLikeTokens(answer);
     }
 
+    // Validação de ancoragem (segurança): bloqueia afirmações arriscadas sem evidência literal no contexto recuperado.
+    // Isso evita "chutes" de tensão, códigos, significados de piscadas e instruções de bypass/jumper.
+    const compactContext = normalizeCompact(context);
+    const missingEvidence = [];
+
+    const voltTokens = extractVoltageTokens(answer);
+    if (voltTokens.length) {
+      const ok = voltTokens.every(v => compactContext.includes(normalizeCompact(v)));
+      if (!ok) missingEvidence.push(`tensão(s) ${voltTokens.join(', ')}`);
+    }
+
+    const codeTokens = extractFaultCodeTokens(answer);
+    if (codeTokens.length) {
+      const ok = codeTokens.every(c => compactContext.includes(normalizeCompact(c)));
+      if (!ok) missingEvidence.push(`código(s) ${codeTokens.join(', ')}`);
+    }
+
+    if (containsRiskyActionLanguage(answer)) {
+      // Só permite bypass/jumper se os termos existirem no contexto
+      const riskyOk = compactContext.includes('jumper') || compactContext.includes('bypass') || compactContext.includes('pontear') || compactContext.includes('ponte');
+      if (!riskyOk) missingEvidence.push('instrução de jumper/bypass/ponte');
+    }
+
+    if (containsBlinkInterpretation(answer) && isStatusIndicatorQuery(question)) {
+      // Interpretação de piscadas/LED exige tabela/legenda no contexto
+      const indicatorOk = docsHaveStatusIndicatorEvidence(selectedDocs);
+      if (!indicatorOk) missingEvidence.push('interpretação de padrão de piscadas/LED');
+    }
+
+    if (missingEvidence.length) {
+      answer = buildUnsafeUngroundedReply(sessionState, missingEvidence);
+    }
+
     // Linha de defesa contra confusão Série/Segurança vs. BUS/CAN
     if (intent === INTENT.safetyChain) {
       const hasBusTokens = /\b(c_l|c_h|can|bus|barramento)\b/i.test(answer);
       if (hasBusTokens) {
-        answer = `Isso aí parece medição de comunicação/dados (BUS/CAN), não de série de portas/seguranças.
-
-Pra eu te passar o conector e os pinos certos da SÉRIE (sem risco de te mandar medir ponto errado), me diz só:
-- Qual é o nome exato da placa/módulo onde você vai medir (como está escrito nela)?
-- Você vai medir na placa principal (série) ou no operador de porta (comunicação)?
-- Tem algum código/mensagem no terminal? Qual?`;
+        answer = buildBusVsSafetyAnswer();
       }
     }
 
