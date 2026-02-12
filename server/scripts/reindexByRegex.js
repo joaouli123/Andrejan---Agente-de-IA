@@ -65,7 +65,7 @@ async function main() {
 
   const sources = matched.map(p => getOriginalNameFromDiskFilename(path.basename(p)));
   console.log('🧹 Removendo chunks antigos das fontes filtradas...');
-  const removal = removeSources(sources);
+  const removal = await removeSources(sources);
   console.log(`   Removidos: ${removal.removed} | Restantes: ${removal.remaining}`);
 
   let totalChunks = 0;

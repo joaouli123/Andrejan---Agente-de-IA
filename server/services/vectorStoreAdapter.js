@@ -219,26 +219,26 @@ export async function getIndexedSources() {
   return [...sources];
 }
 
-export function removeSources(sourceNames) {
+export async function removeSources(sourceNames) {
   if (!isQdrantEnabled()) return local.removeSources(sourceNames);
 
   const names = (Array.isArray(sourceNames) ? sourceNames : []).filter(Boolean);
   if (names.length === 0) return { removed: 0, remaining: 0 };
 
-  return (async () => {
-    const should = names.map(n => ({ key: 'source', match: { value: n } }));
+  const before = await getStats();
+  const should = names.map(n => ({ key: 'source', match: { value: n } }));
 
-    await qdrantFetch(`/collections/${encodeURIComponent(QDRANT_COLLECTION)}/points/delete?wait=true`, {
-      method: 'POST',
-      headers: qdrantHeaders(),
-      body: JSON.stringify({
-        filter: { should },
-      }),
-    });
+  await qdrantFetch(`/collections/${encodeURIComponent(QDRANT_COLLECTION)}/points/delete?wait=true`, {
+    method: 'POST',
+    headers: qdrantHeaders(),
+    body: JSON.stringify({
+      filter: { should },
+    }),
+  });
 
-    const stats = await getStats();
-    return { removed: 0, remaining: stats.totalDocuments };
-  })();
+  const after = await getStats();
+  const removed = Math.max(0, (before.totalDocuments || 0) - (after.totalDocuments || 0));
+  return { removed, remaining: after.totalDocuments || 0 };
 }
 
 export async function searchSimilar(queryEmbedding, topK = 5, brandFilter = null) {

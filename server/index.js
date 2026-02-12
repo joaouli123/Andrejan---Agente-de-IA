@@ -241,7 +241,7 @@ app.post('/api/reindex', adminMiddleware, async (req, res) => {
     console.log(`🔁 Reindex: ${matched.length} PDFs (regex=${includeRegex || 'ALL'})`);
 
     // 1) Remove chunks antigos dessas fontes
-    const removal = removeSources(sourcesToReindex);
+    const removal = await removeSources(sourcesToReindex);
     console.log(`🧹 Removidos ${removal.removed} chunks antigos; restantes ${removal.remaining}`);
 
     // 2) Reprocessa PDFs e adiciona novamente
