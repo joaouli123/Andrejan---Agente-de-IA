@@ -37,7 +37,7 @@ const responseCache = new Map();
 const RESPONSE_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 const RESPONSE_CACHE_MAX = 50;
 // Bump this when changing prompts/guardrails to avoid serving stale cached answers
-const RESPONSE_CACHE_VERSION = '2026-02-11';
+const RESPONSE_CACHE_VERSION = '2026-02-12';
 
 /**
  * Corrige encoding corrompido (UTF-8 decodificado como Latin-1)
@@ -213,6 +213,85 @@ function isPinoutQuery(question) {
   if (/\bcn\d{1,2}\b/.test(q)) return true;
   if (PINOUT_KEYWORDS.some(k => q.includes(k))) return true;
   return false;
+}
+
+function isDiagnosticWorkflowQuery(question) {
+  const q = normalizeText(question);
+  if (!q) return false;
+
+  // Heurística: quando o técnico quer PROCEDIMENTO de isolamento/validação (não pinagem)
+  const workflowSignals = [
+    'como isolar',
+    'isolar',
+    'diagnostic',
+    'diagnostico',
+    'falha de parada',
+    'parada incorreta',
+    'sem movimento',
+    'chamado',
+    'sinais minimos',
+    'sinal minimo',
+    'antes de liberar',
+    'liberar',
+    'sensor',
+    'sensores',
+    'cabeamento',
+    'fiacao',
+    'chicote',
+    'logica',
+    'placa',
+    'eme',
+    'emergencia',
+    'manual',
+    'man',
+    'cadeia',
+    'cadeia de segur',
+    'seguranca',
+    'ort 15',
+  ];
+
+  if (!workflowSignals.some(s => q.includes(s))) return false;
+
+  // Se a pergunta explicitamente pede conector/pino/tabela, não é só workflow.
+  if (isPinoutQuery(question)) return false;
+
+  return true;
+}
+
+function buildDiagnosticWorkflowAnswer(question) {
+  // Resposta procedural genérica e segura (sem inventar pinagem/pinos).
+  // Mantém aplicável mesmo quando o RAG não traz evidência específica.
+  const mentionsSD = /\b(s\s*\/\s*d)\b/i.test(question || '') || /\bliberar\b/i.test(question || '');
+  const sdLine = mentionsSD
+    ? '\n\nAntes de liberar S/D: confirme que TODAS as permissivas estão OK (segurança/EME/MAN/porta/intertravamentos). Se qualquer permissiva estiver aberta, liberar S/D pode só mascarar a causa.'
+    : '';
+
+  return `Pelo que você descreveu, dá pra isolar a causa (sensor vs cabeamento vs lógica da placa) com um fluxo de medição/validação — sem precisar de pinagem exata de cara.
+
+1) Confirme as permissivas mínimas (sem “chutar” bypass)
+- Alimentação(ões) do circuito de entradas estáveis (ex.: 24V do campo e referência/COM).
+- Cadeia de segurança “fechada/OK” no diagnóstico/LEDs.
+- Emergência (EME) em condição normal.
+- Manual/inspeção (MAN/INS), se existir, no modo que permite movimento.
+- Intertravamentos básicos (porta fechada/interlock/limites) conforme o sistema.
+
+2) Isole SENSOR vs CABEAMENTO
+- Teste o sensor no ponto do próprio sensor (ele troca mesmo? contato abre/fecha? nível muda?).
+- Teste continuidade/queda de tensão no cabo/chicote até a controladora (oxidação, emenda, curto, mau contato).
+
+3) Isole CABEAMENTO vs ENTRADA DA PLACA
+- Verifique se o estado que você vê no sensor chega “igual” na entrada da placa (sem precisar saber o pino, mas no borne/conector do circuito correspondente).
+  - Muda no sensor e NÃO muda no lado da placa → cabeamento/conector.
+  - Muda no lado da placa e a placa NÃO reconhece no diagnóstico → entrada/condicionamento da placa ou referência (COM/0V) faltando.
+
+4) Isole LÓGICA (quando entradas estão OK mas não libera movimento)
+- Se as entradas aparecem corretas no diagnóstico e mesmo assim não há movimento, procure:
+  - falha latente/memorizada de segurança;
+  - permissiva faltando (uma única entrada aberta bloqueia tudo);
+  - sequência/temporização (ex.: ordem de CS/CD/LFS/LFD, ou requisito de “porta fechada” antes de habilitar);
+  - modo MAN/INS ativo sem perceber.
+
+Se você quiser que eu seja específico da ORT 15 (nomes de sinais no diagnóstico/onde costuma aparecer cada permissiva), me diga o que você está vendo no display/LEDs/diagnóstico de entradas e quais sensores (CS/CD/LFS/LFD) estão “ativos” agora.${sdLine}`;
 }
 
 function docText(doc) {
@@ -519,6 +598,16 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
 
     // Se não achou nada relevante, NÃO chuta: faz perguntas para melhorar a busca
     if (relevantDocs.length === 0) {
+      // Para perguntas de diagnóstico/procedimento, ainda dá para orientar com segurança
+      // mesmo sem evidência do RAG (sem inventar pinagem/conectores).
+      if (isDiagnosticWorkflowQuery(question)) {
+        return {
+          answer: `${buildDiagnosticWorkflowAnswer(question)}\n\nObs.: não encontrei trechos específicos dessa placa no banco de conhecimento para “cravar” pinos/conectores. Se você precisar de pinagem, me passe a página do diagrama/tabela no PDF.`,
+          sources: [],
+          searchTime: Date.now() - startTime
+        };
+      }
+
       const indexedRaw = await Promise.resolve(getIndexedSources?.() || []);
       const indexed = (Array.isArray(indexedRaw) ? indexedRaw : [])
         .map(s => fixEncoding((s || '').replace(/^\d+-\d+-/, '').replace(/\.pdf$/i, '')))
@@ -542,6 +631,16 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
     if (intent === INTENT.safetyChain) {
       const hasSafetyEvidence = relevantDocs.some(d => countHits(docText(d), SAFETY_CHAIN_KEYWORDS) > 0);
       if (!hasSafetyEvidence) {
+        // Se o técnico está pedindo “procedimento de isolamento” (sensor vs cabo vs lógica),
+        // não bloqueia com perguntas de pinagem. Responde o fluxo seguro e só pede detalhes se ele quiser pinagem.
+        if (isDiagnosticWorkflowQuery(question)) {
+          return {
+            answer: `${buildDiagnosticWorkflowAnswer(question)}\n\nObs.: quando você pedir conector/pino/tabela, aí sim preciso do PDF/página exata pra não chutar.`,
+            sources: [],
+            searchTime: Date.now() - startTime,
+          };
+        }
+
         const questions = [
           'Qual é o nome exato da placa/módulo onde entra a série (como está escrito na placa/diagrama)?',
           'Você está medindo a série na placa principal ou no operador de porta?',
