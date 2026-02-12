@@ -608,7 +608,20 @@ function extractSessionState(question, conversationHistory, brandFilter, signals
   const gen2Match = /\bGEN\s*2\b/i.exec(allText);
   const otisModel = gen2Match ? 'Gen2' : null;
 
-  const model = oronaModel || otisModel;
+  // Extração genérica de modelo quando o técnico informa explicitamente
+  // Ex.: "modelo Arca II", "modelo MRL", "modelo XYZ 300"
+  const explicitModelMatch = /\bmodelo\s*[:\-]?\s*([a-z0-9][a-z0-9 ._\/-]{1,35})/i.exec(allText);
+  let explicitModel = explicitModelMatch ? String(explicitModelMatch[1] || '').trim() : null;
+  if (explicitModel) {
+    explicitModel = explicitModel
+      .replace(/[\n\r]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .replace(/[.,;:!?]+$/g, '')
+      .trim();
+    if (explicitModel.length < 2) explicitModel = null;
+  }
+
+  const model = oronaModel || otisModel || explicitModel;
 
   const board = (signals?.boardTokens?.length || 0) ? signals.boardTokens.join(', ') : null;
   const error = (signals?.errorTokens?.length || 0) ? signals.errorTokens[0] : null;
@@ -899,14 +912,16 @@ function extractSearchSignals(question, conversationHistory) {
   };
 }
 
-function buildClarifyingQuestions(question, hasHistory, signals) {
+function buildClarifyingQuestions(question, hasHistory, signals, sessionState = null) {
   const needsHardwareSpecific = /tens[aã]o|alimenta|jumper|bypass|med(i|iç)[aã]o|medir|conector|pino|pinagem|reset|drive|inversor/i.test(question);
   const hasBoard = (signals?.boardTokens?.length || 0) > 0;
+  const hasBrand = Boolean(String(sessionState?.brand || '').trim());
+  const hasModel = Boolean(String(sessionState?.model || '').trim());
 
   const questions = [];
-  if (!hasHistory) {
+  if (!hasBrand && !hasHistory) {
     questions.push('Qual a marca e o modelo do elevador (como está na etiqueta/documentação técnica do equipamento)?');
-  } else {
+  } else if (!hasModel) {
     questions.push('Qual é o modelo do elevador (exatamente como aparece no equipamento)?');
   }
   if (!hasBoard) {
@@ -1195,6 +1210,26 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
     
     const signals = extractSearchSignals(question, conversationHistory);
     const sessionState = extractSessionState(question, conversationHistory, effectiveBrandFilter, signals);
+
+    // Gate obrigatório: sempre confirmar marca e modelo antes de responder diagnóstico.
+    // Se já estiver no histórico/filtro, não pergunta novamente.
+    const missingBrand = !String(sessionState?.brand || '').trim();
+    const missingModel = !String(sessionState?.model || '').trim();
+    if (missingBrand || missingModel) {
+      telemetryOutcome = 'abstained';
+      telemetryBlockedReason = 'missing_brand_or_model';
+
+      const missingLines = [];
+      if (missingBrand) missingLines.push('- Qual é a marca do equipamento?');
+      if (missingModel) missingLines.push('- Qual é o modelo exato (como aparece na etiqueta/placa)?');
+
+      return {
+        answer: `Antes de eu te responder com precisão e sem misturar documentação, preciso confirmar:\n${missingLines.join('\n')}`,
+        sources: [],
+        searchTime: Date.now() - startTime,
+      };
+    }
+
     const technicalKeywords = extractTechnicalKeywords(question, conversationHistory, signals);
     const faultCodes = (signals?.faultCodes?.length ? signals.faultCodes : signals.errorTokens || []).slice(0, 8);
     const faultCodeQuery = isFaultCodeQuery(question, signals);
@@ -1454,7 +1489,7 @@ ${qs.map(q => `- ${q}`).join('\n')}`,
         .filter(Boolean);
       const sourcesText = indexed.length ? `Fontes disponíveis no banco de conhecimento: ${indexed.slice(0, 20).join(', ')}.` : 'Nenhuma fonte parece estar indexada no banco de conhecimento no momento.';
 
-      const questions = buildClarifyingQuestions(question, hasHistory, signals);
+      const questions = buildClarifyingQuestions(question, hasHistory, signals, sessionState);
       const qBlock = questions.map(q => `- ${q}`).join('\n');
       const brandMsg = effectiveBrandFilter
         ? `Não encontrei trechos relevantes dentro do filtro de marca selecionado.`
