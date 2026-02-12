@@ -356,16 +356,33 @@ export function splitTextIntoChunks(text, metadata = {}) {
  * Processa um diretório inteiro de PDFs (com OCR automático)
  */
 export async function processDirectory(dirPath, onProgress) {
-  const files = fs.readdirSync(dirPath).filter(f => f.toLowerCase().endsWith('.pdf'));
+  const listPdfFilesRecursive = (dir) => {
+    const out = [];
+    if (!fs.existsSync(dir)) return out;
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const ent of entries) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) out.push(...listPdfFilesRecursive(full));
+      else if (ent.isFile() && ent.name.toLowerCase().endsWith('.pdf')) out.push(full);
+    }
+    return out;
+  };
+
+  const filePaths = listPdfFilesRecursive(dirPath);
+  const files = filePaths.map(p => ({
+    fullPath: p,
+    name: path.basename(p),
+    relativePath: path.relative(dirPath, p)
+  }));
   const allChunks = [];
   
   console.log(`\n📁 Encontrados ${files.length} arquivos PDF para processar\n`);
   
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
-    const filePath = path.join(dirPath, file);
+    const filePath = file.fullPath;
     
-    console.log(`📄 [${i + 1}/${files.length}] Processando: ${file}`);
+    console.log(`📄 [${i + 1}/${files.length}] Processando: ${file.relativePath}`);
     
     try {
       // Usa extração com OCR automático
@@ -380,10 +397,10 @@ export async function processDirectory(dirPath, onProgress) {
       }
       
       const chunks = splitTextIntoChunks(extracted.text, {
-        source: file,
+        source: file.name,
         filePath: filePath,
         numPages: extracted.numPages,
-        title: extracted.info?.Title || file.replace('.pdf', ''),
+        title: extracted.info?.Title || file.name.replace('.pdf', ''),
         ocrUsed: extracted.ocrUsed || false
       });
       
@@ -395,12 +412,12 @@ export async function processDirectory(dirPath, onProgress) {
         onProgress({
           current: i + 1,
           total: files.length,
-          file: file,
+          file: file.relativePath,
           chunks: chunks.length
         });
       }
     } catch (error) {
-      console.error(`   ❌ Erro ao processar ${file}:`, error.message);
+      console.error(`   ❌ Erro ao processar ${file.relativePath}:`, error.message);
     }
   }
   

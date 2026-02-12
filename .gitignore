@@ -29,6 +29,7 @@ server/.env
 
 # Data files (too large for git)
 server/data/vectors.json
+server/data/vectors_append.ndjson
 server/data/pdfs/
 server/data/chroma/
 

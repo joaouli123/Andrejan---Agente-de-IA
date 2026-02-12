@@ -12,7 +12,7 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 
 import { ragQuery, searchOnly } from './services/ragService.js';
-import { initializeChroma, getStats, clearCollection, addDocuments, hasSource, getIndexedSources, isLoading, getLoadingProgress, compactStore } from './services/vectorStore.js';
+import { initializeChroma, getStats, clearCollection, addDocuments, hasSource, getIndexedSources, isLoading, getLoadingProgress, compactStore, removeSources } from './services/vectorStore.js';
 import { extractTextFromPDF, extractTextWithOCR, splitTextIntoChunks, terminateOCR } from './services/pdfExtractor.js';
 import { generateEmbeddings } from './services/embeddingService.js';
 import rateLimit from 'express-rate-limit';
@@ -25,6 +25,26 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3002;
 const PDF_DIR = process.env.PDF_PATH || path.join(__dirname, 'data', 'pdfs');
+
+function listPdfFilesRecursive(dir) {
+  const results = [];
+  if (!fs.existsSync(dir)) return results;
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  for (const ent of entries) {
+    const full = path.join(dir, ent.name);
+    if (ent.isDirectory()) {
+      results.push(...listPdfFilesRecursive(full));
+    } else if (ent.isFile() && ent.name.toLowerCase().endsWith('.pdf')) {
+      results.push(full);
+    }
+  }
+  return results;
+}
+
+function getOriginalNameFromDiskFilename(filename) {
+  // Multer salva como "timestamp-random-originalname.pdf"
+  return filename.replace(/^\d+-\d+-/, '');
+}
 
 // --- SEGURANÇA ---
 
@@ -145,14 +165,20 @@ app.get('/api/stats', authMiddleware, async (req, res) => {
  */
 app.get('/api/documents', authMiddleware, (req, res) => {
   try {
-    const files = fs.readdirSync(PDF_DIR)
-      .filter(f => f.toLowerCase().endsWith('.pdf'))
-      .map(f => ({
-        name: f,
-        path: path.join(PDF_DIR, f),
-        size: fs.statSync(path.join(PDF_DIR, f)).size,
-        uploadedAt: fs.statSync(path.join(PDF_DIR, f)).mtime
-      }));
+    const diskFiles = listPdfFilesRecursive(PDF_DIR);
+    const files = diskFiles.map(fullPath => {
+      const relPath = path.relative(PDF_DIR, fullPath);
+      const diskName = path.basename(fullPath);
+      const originalName = getOriginalNameFromDiskFilename(diskName);
+      return {
+        name: diskName,
+        originalName,
+        relativePath: relPath,
+        path: fullPath,
+        size: fs.statSync(fullPath).size,
+        uploadedAt: fs.statSync(fullPath).mtime
+      };
+    });
     res.json(files);
   } catch (error) {
     res.json([]);
@@ -166,7 +192,7 @@ function fileExistsOnDisk(originalName, excludeFilename = null) {
   try {
     if (!fs.existsSync(PDF_DIR)) return false;
     const normalizedName = originalName.toLowerCase().replace(/[^a-z0-9.-]/g, '');
-    const files = fs.readdirSync(PDF_DIR);
+    const files = listPdfFilesRecursive(PDF_DIR).map(p => path.basename(p));
     return files.some(f => {
       // Ignorar o próprio arquivo recém-salvo pelo multer
       if (excludeFilename && f === excludeFilename) return false;
@@ -176,6 +202,93 @@ function fileExistsOnDisk(originalName, excludeFilename = null) {
     });
   } catch { return false; }
 }
+
+/**
+ * Reindexa PDFs já existentes no disco (sem precisar reupload)
+ * Body: { includeRegex?: string, brandName?: string, dryRun?: boolean }
+ */
+app.post('/api/reindex', adminMiddleware, async (req, res) => {
+  try {
+    if (isLoading()) {
+      return res.status(409).json({ error: `Vector store ainda carregando (${getLoadingProgress()})` });
+    }
+
+    const includeRegex = (req.body?.includeRegex || '').toString().trim();
+    const brandName = (req.body?.brandName || null);
+    const dryRun = Boolean(req.body?.dryRun);
+
+    const pattern = includeRegex ? new RegExp(includeRegex, 'i') : null;
+    const diskFiles = listPdfFilesRecursive(PDF_DIR);
+    const matched = pattern
+      ? diskFiles.filter(p => pattern.test(path.basename(p)) || pattern.test(path.relative(PDF_DIR, p)))
+      : diskFiles;
+
+    if (matched.length === 0) {
+      return res.json({ success: true, matched: 0, message: 'Nenhum PDF correspondeu ao filtro.' });
+    }
+
+    const sourcesToReindex = matched.map(p => getOriginalNameFromDiskFilename(path.basename(p)));
+
+    if (dryRun) {
+      return res.json({
+        success: true,
+        dryRun: true,
+        matched: matched.length,
+        sources: sourcesToReindex,
+      });
+    }
+
+    console.log(`🔁 Reindex: ${matched.length} PDFs (regex=${includeRegex || 'ALL'})`);
+
+    // 1) Remove chunks antigos dessas fontes
+    const removal = removeSources(sourcesToReindex);
+    console.log(`🧹 Removidos ${removal.removed} chunks antigos; restantes ${removal.remaining}`);
+
+    // 2) Reprocessa PDFs e adiciona novamente
+    let totalChunks = 0;
+    for (const fullPath of matched) {
+      const diskName = path.basename(fullPath);
+      const originalName = getOriginalNameFromDiskFilename(diskName);
+
+      console.log(`📄 Reindexando: ${originalName}`);
+      const extracted = await extractTextWithOCR(fullPath);
+      const chunks = splitTextIntoChunks(extracted.text, {
+        source: originalName,
+        filePath: fullPath,
+        numPages: extracted.numPages,
+        title: extracted.info?.Title || originalName.replace('.pdf', ''),
+        brandName: brandName,
+        reindexedAt: new Date().toISOString(),
+        ocrUsed: extracted.ocrUsed || false,
+      });
+
+      const texts = chunks.map(c => c.content);
+      const embeddings = await generateEmbeddings(texts);
+
+      const validChunks = [];
+      const validEmbeddings = [];
+      for (let i = 0; i < chunks.length; i++) {
+        if (embeddings[i]) {
+          validChunks.push(chunks[i]);
+          validEmbeddings.push(embeddings[i]);
+        }
+      }
+
+      await addDocuments(validChunks, validEmbeddings);
+      totalChunks += validChunks.length;
+    }
+
+    return res.json({
+      success: true,
+      matched: matched.length,
+      removedChunks: removal.removed,
+      addedChunks: totalChunks,
+    });
+  } catch (e) {
+    console.error('Erro no reindex:', e);
+    return res.status(500).json({ error: e.message });
+  }
+});
 
 /**
  * Verifica quais arquivos já estão indexados (para skip de duplicatas)

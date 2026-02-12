@@ -358,6 +358,55 @@ export function getIndexedSources() {
 }
 
 /**
+ * Remove documentos do banco por source (nome de arquivo original).
+ * Útil para reindexar apenas uma marca/modelo sem limpar tudo.
+ */
+export function removeSources(sourceNames) {
+  if (!Array.isArray(sourceNames) || sourceNames.length === 0) {
+    return { removed: 0, remaining: vectorStore.documents.length };
+  }
+
+  const targets = sourceNames
+    .filter(Boolean)
+    .map(s => normalizeStr(s))
+    .filter(Boolean);
+
+  if (targets.length === 0) {
+    return { removed: 0, remaining: vectorStore.documents.length };
+  }
+
+  const keep = [];
+  let removed = 0;
+
+  for (let i = 0; i < vectorStore.metadatas.length; i++) {
+    const srcNorm = normalizeStr(vectorStore.metadatas[i]?.source || '');
+    const shouldRemove = targets.some(t => srcNorm === t || srcNorm.includes(t) || t.includes(srcNorm));
+    if (shouldRemove) {
+      removed++;
+    } else {
+      keep.push(i);
+    }
+  }
+
+  if (removed > 0) {
+    vectorStore = {
+      ids: keep.map(i => vectorStore.ids[i]),
+      documents: keep.map(i => vectorStore.documents[i]),
+      metadatas: keep.map(i => vectorStore.metadatas[i]),
+      embeddings: keep.map(i => vectorStore.embeddings[i]),
+    };
+
+    // Reescreve o JSON principal e zera o append para evitar inconsistência
+    saveToFile();
+    if (fs.existsSync(APPEND_FILE)) {
+      try { fs.unlinkSync(APPEND_FILE); } catch {}
+    }
+  }
+
+  return { removed, remaining: vectorStore.documents.length };
+}
+
+/**
  * Retorna estatísticas do banco de vetores
  */
 export async function getStats() {
@@ -393,6 +442,7 @@ export default {
   clearCollection,
   hasSource,
   getIndexedSources,
+  removeSources,
   isLoading,
   getLoadingProgress,
   compactStore
