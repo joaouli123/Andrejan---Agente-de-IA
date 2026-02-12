@@ -12,6 +12,8 @@ import { v4 as uuidv4 } from 'uuid';
 // Tamanho máximo de cada chunk (em caracteres)
 const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 200;
+const TECH_CHUNK_SIZE = 1200;
+const TECH_CHUNK_OVERLAP = 220;
 
 // Limiar: se uma página tem menos de X chars de texto, provavelmente é scan/imagem
 const OCR_TEXT_THRESHOLD = 50;
@@ -72,8 +74,32 @@ async function safePdfParseByPage(dataBuffer) {
       pagerender: async (pageData) => {
         try {
           const textContent = await pageData.getTextContent({ normalizeWhitespace: true });
-          const strings = textContent.items.map((item) => item.str);
-          const pageText = strings.join(' ').replace(/\s+/g, ' ').trim();
+          const items = (textContent.items || [])
+            .map((item) => {
+              const text = (item?.str || '').trim();
+              const transform = item?.transform || [];
+              const x = Number.isFinite(transform[4]) ? transform[4] : 0;
+              const y = Number.isFinite(transform[5]) ? transform[5] : 0;
+              return { text, x, y };
+            })
+            .filter(item => item.text.length > 0);
+
+          const byY = new Map();
+          for (const item of items) {
+            const lineKey = Math.round(item.y / 2) * 2;
+            if (!byY.has(lineKey)) byY.set(lineKey, []);
+            byY.get(lineKey).push(item);
+          }
+
+          const sortedLineKeys = Array.from(byY.keys()).sort((a, b) => b - a);
+          const lines = [];
+          for (const key of sortedLineKeys) {
+            const lineItems = byY.get(key).sort((a, b) => a.x - b.x);
+            const line = lineItems.map(it => it.text).join(' ').replace(/\s+/g, ' ').trim();
+            if (line) lines.push(line);
+          }
+
+          const pageText = lines.join('\n').trim();
           pages.push(pageText);
           return pageText;
         } catch {
@@ -98,6 +124,120 @@ async function safePdfParseByPage(dataBuffer) {
     console.warn(`   ⚠️ pdf-parse (por página) falhou: ${error.message}`);
     return null;
   }
+}
+
+function normalizeExtractedText(text) {
+  return String(text || '')
+    .replace(/\r/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/\u00A0/g, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+function splitIntoPageBlocks(text) {
+  const normalized = normalizeExtractedText(text);
+  const markerRegex = /---\s*P[aá]gina\s*(\d+)(?:\s*\(OCR\))?\s*---/gi;
+  const matches = [...normalized.matchAll(markerRegex)];
+
+  if (!matches.length) {
+    return [{ page: null, content: normalized }];
+  }
+
+  const blocks = [];
+  for (let i = 0; i < matches.length; i++) {
+    const current = matches[i];
+    const next = matches[i + 1];
+    const start = current.index + current[0].length;
+    const end = next ? next.index : normalized.length;
+    const page = Number.parseInt(current[1], 10);
+    const content = normalized.slice(start, end).trim();
+    if (content) blocks.push({ page: Number.isFinite(page) ? page : null, content });
+  }
+  return blocks;
+}
+
+function extractFaultCodeFromLine(line) {
+  if (!line) return null;
+  const raw = String(line).trim();
+
+  const patterns = [
+    /^\s*(\d{3,4})\s+[A-Za-zÀ-ÿ]/,
+    /^\s*(?:falha|erro|fault|code|c[oó]digo)\s*[:#-]?\s*([A-Z]?\s*-?\s*\d{2,4})\b/i,
+    /^\s*([A-Z]\s*-?\s*\d{2,4})\b/i,
+  ];
+
+  for (const rx of patterns) {
+    const m = raw.match(rx);
+    if (m && m[1]) return String(m[1]).replace(/\s+/g, '').toUpperCase();
+  }
+
+  return null;
+}
+
+function splitLongTextWithOverlap(text, size = TECH_CHUNK_SIZE, overlap = TECH_CHUNK_OVERLAP) {
+  const source = normalizeExtractedText(text);
+  if (!source) return [];
+  if (source.length <= size) return [source];
+
+  const out = [];
+  let cursor = 0;
+  while (cursor < source.length) {
+    let end = Math.min(source.length, cursor + size);
+    if (end < source.length) {
+      const lastBreak = Math.max(
+        source.lastIndexOf('\n\n', end),
+        source.lastIndexOf('\n', end),
+        source.lastIndexOf('. ', end)
+      );
+      if (lastBreak > cursor + 250) end = lastBreak;
+    }
+
+    const piece = source.slice(cursor, end).trim();
+    if (piece) out.push(piece);
+
+    if (end >= source.length) break;
+    cursor = Math.max(0, end - overlap);
+  }
+
+  return out;
+}
+
+function createSpecializedFaultChunks(pageText, baseMetadata, nextChunkIndexRef) {
+  const lines = normalizeExtractedText(pageText).split('\n').map(l => l.trim()).filter(Boolean);
+  if (!lines.length) return [];
+
+  const chunks = [];
+  const seen = new Set();
+
+  for (let i = 0; i < lines.length; i++) {
+    const code = extractFaultCodeFromLine(lines[i]);
+    if (!code) continue;
+
+    const start = Math.max(0, i - 2);
+    const end = Math.min(lines.length, i + 4);
+    const windowText = lines.slice(start, end).join('\n').trim();
+    if (!windowText || windowText.length < 18) continue;
+
+    const signature = `${code}::${windowText.slice(0, 220)}`;
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+
+    const content = `CÓDIGO ${code}\n${windowText}`;
+    chunks.push({
+      id: uuidv4(),
+      content,
+      metadata: {
+        ...baseMetadata,
+        faultCode: code,
+        chunkType: 'fault_code',
+        chunkIndex: nextChunkIndexRef.value++
+      }
+    });
+  }
+
+  return chunks;
 }
 
 /**
@@ -308,7 +448,7 @@ export async function extractTextWithOCR(filePath, onProgress) {
   }
   
   // 4. Combina texto disponível
-  const combinedText = [parsedText.trim(), ocrText.trim()].filter(Boolean).join('\n\n').trim();
+  const combinedText = normalizeExtractedText([parsedText.trim(), ocrText.trim()].filter(Boolean).join('\n\n'));
   
   if (!combinedText || combinedText.length < 20) {
     throw new Error(`Não foi possível extrair texto do PDF (${combinedText.length} chars). Arquivo pode estar corrompido ou protegido.`);
@@ -344,54 +484,63 @@ function splitIntoSections(text) {
  */
 export function splitTextIntoChunks(text, metadata = {}) {
   const chunks = [];
-  let chunkIndex = 0;
-  
-  // 1. Divide em seções lógicas primeiro
-  const sections = splitIntoSections(text);
-  
-  for (const section of sections) {
-    // 2. Se a seção cabe em um chunk, mantém inteira
-    if (section.length <= CHUNK_SIZE) {
-      if (section.trim()) {
-        chunks.push({
-          id: uuidv4(),
-          content: section.trim(),
-          metadata: { ...metadata, chunkIndex: chunkIndex++ }
-        });
+  const normalizedText = normalizeExtractedText(text);
+  const pages = splitIntoPageBlocks(normalizedText);
+  const dedupe = new Set();
+  const nextChunkIndexRef = { value: 0 };
+
+  const pushChunk = (content, extraMeta = {}) => {
+    const clean = normalizeExtractedText(content);
+    if (!clean || clean.length < 25) return;
+
+    const key = clean.toLowerCase().replace(/\s+/g, ' ').slice(0, 240);
+    if (dedupe.has(key)) return;
+    dedupe.add(key);
+
+    chunks.push({
+      id: uuidv4(),
+      content: clean,
+      metadata: {
+        ...metadata,
+        ...extraMeta,
+        chunkIndex: nextChunkIndexRef.value++
       }
-      continue;
-    }
-    
-    // 3. Seção grande: divide por sentenças com overlap
-    const sentences = section.split(/(?<=[.!?])\s+/);
-    let currentChunk = '';
-    
-    for (const sentence of sentences) {
-      if ((currentChunk + sentence).length > CHUNK_SIZE && currentChunk.length > 0) {
-        chunks.push({
-          id: uuidv4(),
-          content: currentChunk.trim(),
-          metadata: { ...metadata, chunkIndex: chunkIndex++ }
-        });
-        
-        // Overlap: mantém os últimos CHUNK_OVERLAP caracteres
-        const overlapStart = Math.max(0, currentChunk.length - CHUNK_OVERLAP);
-        currentChunk = currentChunk.substring(overlapStart) + ' ' + sentence;
-      } else {
-        currentChunk += (currentChunk ? ' ' : '') + sentence;
+    });
+  };
+
+  for (const pageBlock of pages) {
+    const pageMeta = pageBlock.page ? { page: pageBlock.page } : {};
+
+    const specializedFaultChunks = createSpecializedFaultChunks(pageBlock.content, { ...metadata, ...pageMeta }, nextChunkIndexRef);
+    for (const chunk of specializedFaultChunks) {
+      const key = normalizeExtractedText(chunk.content).toLowerCase().replace(/\s+/g, ' ').slice(0, 240);
+      if (!dedupe.has(key)) {
+        dedupe.add(key);
+        chunks.push(chunk);
       }
     }
-    
-    // Adiciona o último chunk da seção
-    if (currentChunk.trim()) {
-      chunks.push({
-        id: uuidv4(),
-        content: currentChunk.trim(),
-        metadata: { ...metadata, chunkIndex: chunkIndex++ }
-      });
+
+    const sections = splitIntoSections(pageBlock.content);
+    for (const section of sections) {
+      const pieces = splitLongTextWithOverlap(section, CHUNK_SIZE, CHUNK_OVERLAP);
+      for (const piece of pieces) {
+        pushChunk(piece, { ...pageMeta, chunkType: 'semantic' });
+      }
+    }
+
+    const lineAwarePieces = splitLongTextWithOverlap(pageBlock.content, TECH_CHUNK_SIZE, TECH_CHUNK_OVERLAP);
+    for (const piece of lineAwarePieces) {
+      pushChunk(piece, { ...pageMeta, chunkType: 'page_window' });
     }
   }
-  
+
+  if (chunks.length === 0 && normalizedText) {
+    const fallbackPieces = splitLongTextWithOverlap(normalizedText, CHUNK_SIZE, CHUNK_OVERLAP);
+    for (const piece of fallbackPieces) {
+      pushChunk(piece, { chunkType: 'fallback' });
+    }
+  }
+
   return chunks;
 }
 

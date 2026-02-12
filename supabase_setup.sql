@@ -98,8 +98,6 @@ insert into profiles (id, name, company, email, plan, credits_limit, is_admin) v
 
 -- Inserir Agentes Padrão
 insert into agents (id, name, role, description, icon, color, system_instruction) values
-('general-tech', 'Técnico Geral', 'Diagnóstico Universal', 'Especialista em identificar falhas comuns em diversas marcas e modelos.', 'Wrench', 'blue', 'Você é um técnico especialista em elevadores com 20 anos de experiência...'),
-('code-master', 'Mestre dos Códigos', 'Decodificador de Erros', 'Especialista em interpretar códigos hexadecimais e falhas de inversores.', 'Binary', 'emerald', 'Você é um especialista em eletrônica de elevadores...'),
 ('safety-eng', 'Eng. de Segurança', 'Normas e Procedimentos', 'Focado em procedimentos de resgate, NR-10, NR-35 e normas técnicas.', 'ShieldAlert', 'amber', 'Você é um Engenheiro de Segurança do Trabalho...'),
 ('mentor', 'Mentor Técnico', 'Carreira e Aprendizado', 'Ajuda técnicos iniciantes a entenderem conceitos básicos e evoluírem na carreira.', 'GraduationCap', 'violet', 'Você é um mentor paciente...');
 

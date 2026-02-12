@@ -968,19 +968,19 @@ export const AdminOverview: React.FC = () => {
                         </h3>
                         <div className="space-y-3">
                             <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
-                                <span className="text-sm font-medium text-slate-700">Técnico Geral</span>
+                              <span className="text-sm font-medium text-slate-700">Eng. de Segurança</span>
                                 <span className="text-sm font-bold text-slate-900">8.2k consultas</span>
                             </div>
                             <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
-                                <span className="text-sm font-medium text-slate-700">Mestre dos Códigos</span>
+                              <span className="text-sm font-medium text-slate-700">Mentor Técnico</span>
                                 <span className="text-sm font-bold text-slate-900">3.1k consultas</span>
                             </div>
                             <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
-                                <span className="text-sm font-medium text-slate-700">Eng. de Segurança</span>
+                              <span className="text-sm font-medium text-slate-700">Especialista Schindler</span>
                                 <span className="text-sm font-bold text-slate-900">1.8k consultas</span>
                             </div>
                             <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
-                                <span className="text-sm font-medium text-slate-700">Mentor Técnico</span>
+                              <span className="text-sm font-medium text-slate-700">Especialista Otis</span>
                                 <span className="text-sm font-bold text-slate-900">950 consultas</span>
                             </div>
                         </div>

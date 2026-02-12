@@ -138,10 +138,7 @@ insert into brands (name) values ('Schindler'), ('Otis'), ('Thyssenkrupp'), ('At
 on conflict (name) do nothing;
 
 -- Agentes Padrão
-insert into agents (id, name, role, description, icon, color, system_instruction) values
-('general-tech', 'Técnico Geral', 'Diagnóstico Universal', 'Especialista multimarcas.', 'Wrench', 'blue', 'Você é um técnico especialista...'),
-('code-master', 'Mestre dos Códigos', 'Decodificador', 'Especialista em códigos de erro.', 'Binary', 'emerald', 'Traduz códigos hexadecimais...')
-on conflict (id) do nothing;
+-- Nenhum agente padrão inicial. Os agentes serão criados sob demanda no app.
 
 -- 8. POLÍTICAS DE SEGURANÇA (RLS - Público para dev)
 alter table brands enable row level security;

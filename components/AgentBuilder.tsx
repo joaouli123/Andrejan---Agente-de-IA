@@ -62,18 +62,28 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ user, onAgentCreated }) => 
             createdBy: user.id
         };
 
-        await Storage.saveAgentToDatabase(newAgent);
-        setAgents(Storage.getAgents()); // Refresh list
-        onAgentCreated(); // Notify parent
-        resetForm();
-        setView('list');
+        try {
+            await Storage.saveAgentToDatabase(newAgent);
+            setAgents(Storage.getAgents());
+            onAgentCreated();
+            resetForm();
+            setView('list');
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Falha ao salvar agente no banco';
+            alert(message);
+        }
     };
 
     const handleDelete = async (id: string) => {
         if (confirm('Tem certeza que deseja excluir este agente?')) {
-            await Storage.deleteAgentFromDatabase(id);
-            setAgents(Storage.getAgents());
-            onAgentCreated();
+            try {
+                await Storage.deleteAgentFromDatabase(id);
+                setAgents(Storage.getAgents());
+                onAgentCreated();
+            } catch (error) {
+                const message = error instanceof Error ? error.message : 'Falha ao excluir agente no banco';
+                alert(message);
+            }
         }
     };
 

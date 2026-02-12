@@ -5,8 +5,6 @@ import { supabase } from './supabase';
 const CHATS_KEY = 'elevex_chats';
 const CURRENT_USER_KEY = 'elevex_current_user';
 const ADMIN_USERS_KEY = 'elevex_admin_users';
-const CUSTOM_AGENTS_KEY = 'elevex_custom_agents';
-const AGENTS_CACHE_KEY = 'elevex_agents_cache';
 const BRANDS_KEY = 'elevex_brands';
 const MODELS_KEY = 'elevex_models';
 
@@ -195,43 +193,28 @@ export const archiveSession = (sessionId: string, archived: boolean) => {
 
 // --- AGENTS ---
 
-export const getAgents = (): Agent[] => {
-    const cached = localStorage.getItem(AGENTS_CACHE_KEY);
-    if (cached) {
-        try {
-            const parsed = JSON.parse(cached);
-            if (Array.isArray(parsed)) return parsed;
-        } catch {
-            // fallback para storage antigo
-        }
-    }
+let runtimeAgents: Agent[] = [...DEFAULT_AGENTS];
 
-    const custom = JSON.parse(localStorage.getItem(CUSTOM_AGENTS_KEY) || '[]');
-    return [...DEFAULT_AGENTS, ...custom];
+const clearLegacyAgentLocalData = () => {
+    localStorage.removeItem('elevex_custom_agents');
+    localStorage.removeItem('elevex_agents_cache');
+};
+
+export const getAgents = (): Agent[] => {
+    return runtimeAgents;
 };
 
 export const saveAgent = (agent: Agent) => {
-    const custom = JSON.parse(localStorage.getItem(CUSTOM_AGENTS_KEY) || '[]');
-    const index = custom.findIndex((a: Agent) => a.id === agent.id);
+    const index = runtimeAgents.findIndex((a: Agent) => a.id === agent.id);
     if (index >= 0) {
-        custom[index] = agent;
+        runtimeAgents[index] = agent;
     } else {
-        custom.push(agent);
+        runtimeAgents.push(agent);
     }
-    localStorage.setItem(CUSTOM_AGENTS_KEY, JSON.stringify(custom));
-
-    // Atualiza cache completo em memória local
-    const full = [...DEFAULT_AGENTS, ...custom];
-    localStorage.setItem(AGENTS_CACHE_KEY, JSON.stringify(full));
 };
 
 export const deleteAgent = (agentId: string) => {
-    const custom = JSON.parse(localStorage.getItem(CUSTOM_AGENTS_KEY) || '[]');
-    const filtered = custom.filter((a: Agent) => a.id !== agentId);
-    localStorage.setItem(CUSTOM_AGENTS_KEY, JSON.stringify(filtered));
-
-    const full = [...DEFAULT_AGENTS, ...filtered];
-    localStorage.setItem(AGENTS_CACHE_KEY, JSON.stringify(full));
+    runtimeAgents = runtimeAgents.filter((a: Agent) => a.id !== agentId);
 };
 
 type SupabaseAgentRow = {
@@ -247,6 +230,8 @@ type SupabaseAgentRow = {
     brands?: { name?: string } | null;
 };
 
+const REMOVED_AGENT_IDS = new Set(['general-tech', 'code-master']);
+
 const mapSupabaseAgentToApp = (row: SupabaseAgentRow): Agent => ({
     id: row.id,
     name: row.name,
@@ -261,13 +246,18 @@ const mapSupabaseAgentToApp = (row: SupabaseAgentRow): Agent => ({
 });
 
 const setAgentsCache = (agents: Agent[]) => {
-    localStorage.setItem(AGENTS_CACHE_KEY, JSON.stringify(agents));
-    localStorage.setItem(CUSTOM_AGENTS_KEY, JSON.stringify(agents.filter(a => a.isCustom)));
+    runtimeAgents = agents;
 };
 
 export const syncAgentsFromDatabase = async (): Promise<Agent[]> => {
     try {
+        clearLegacyAgentLocalData();
         const user = getUserProfile();
+
+        await supabase
+            .from('agents')
+            .delete()
+            .in('id', Array.from(REMOVED_AGENT_IDS));
 
         const { data, error } = await supabase
             .from('agents')
@@ -275,21 +265,28 @@ export const syncAgentsFromDatabase = async (): Promise<Agent[]> => {
             .order('name');
 
         if (error || !data) {
-            return getAgents();
+            return runtimeAgents;
         }
 
         const allAgents = (data as SupabaseAgentRow[]).map(mapSupabaseAgentToApp);
 
         // Padrão + custom do usuário logado
-        const filtered = allAgents.filter(a => !a.isCustom || (user && a.createdBy === user.id));
+        const filtered = allAgents.filter(a => {
+            if (REMOVED_AGENT_IDS.has(a.id)) return false;
+            return !a.isCustom || (user && a.createdBy === user.id);
+        });
         setAgentsCache(filtered);
         return filtered;
     } catch {
-        return getAgents();
+        return runtimeAgents;
     }
 };
 
 export const saveAgentToDatabase = async (agent: Agent): Promise<Agent> => {
+    if (REMOVED_AGENT_IDS.has(agent.id)) {
+        throw new Error('Este agente foi removido e não pode ser recriado com o mesmo ID');
+    }
+
     const user = getUserProfile();
 
     // Resolve brand_id pela brandName (quando informado)
@@ -318,9 +315,7 @@ export const saveAgentToDatabase = async (agent: Agent): Promise<Agent> => {
 
     const { error } = await supabase.from('agents').upsert([payload]);
     if (error) {
-        // fallback local para não quebrar UX
-        saveAgent(agent);
-        return agent;
+        throw new Error(error.message || 'Falha ao salvar agente no banco');
     }
 
     await syncAgentsFromDatabase();
@@ -335,13 +330,12 @@ export const deleteAgentFromDatabase = async (agentId: string): Promise<void> =>
 
         const { error } = await query;
         if (error) {
-            deleteAgent(agentId);
-            return;
+            throw new Error(error.message || 'Falha ao excluir agente no banco');
         }
 
         await syncAgentsFromDatabase();
     } catch {
-        deleteAgent(agentId);
+        throw new Error('Falha ao excluir agente no banco');
     }
 };
 

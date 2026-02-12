@@ -37,7 +37,7 @@ const responseCache = new Map();
 const RESPONSE_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 const RESPONSE_CACHE_MAX = 50;
 // Bump this when changing prompts/guardrails to avoid serving stale cached answers
-const RESPONSE_CACHE_VERSION = '2026-02-12-7';
+const RESPONSE_CACHE_VERSION = '2026-02-12-10';
 
 /**
  * Corrige encoding corrompido (UTF-8 decodificado como Latin-1)
@@ -617,6 +617,208 @@ function buildOtisGenericGateQuestions(sessionState, signals) {
   return questions.slice(0, 3);
 }
 
+function extractStrictFaultCodes(text) {
+  if (!text) return [];
+  const raw = String(text);
+  const out = new Set();
+
+  for (const m of raw.matchAll(/\b(?:falha|erro|fault|code|c[oó]digo)\s*[:#-]?\s*([A-Z]?\s*-?\s*\d{2,4})\b/gi)) {
+    const code = String(m[1] || '').replace(/\s+/g, '').toUpperCase();
+    if (code.length >= 2 && code.length <= 8) out.add(code);
+  }
+
+  // Se a pergunta for curta e focada em código, aceita número isolado (ex.: "falha 303", "303?")
+  const shortText = raw.length <= 120;
+  const hasErrorIntent = /\b(falha|erro|fault|code|c[oó]digo)\b/i.test(raw);
+  if (shortText || hasErrorIntent) {
+    for (const m of raw.matchAll(/\b(\d{3,4})\b/g)) {
+      out.add(m[1]);
+    }
+  }
+
+  return Array.from(out).slice(0, 8);
+}
+
+function normalizeFaultToken(token) {
+  return String(token || '').replace(/\s+/g, '').toUpperCase();
+}
+
+function isFaultCodeQuery(question, signals) {
+  const hasFaultToken = (signals?.faultCodes?.length || 0) > 0;
+  if (hasFaultToken) return true;
+  return /\b(falha|erro|fault|code|c[oó]digo)\b/i.test(question || '');
+}
+
+function docMentionsAnyFaultCode(doc, faultCodes) {
+  if (!doc || !faultCodes || faultCodes.length === 0) return false;
+  const text = `${doc?.metadata?.title || ''} ${doc?.content || ''}`.toUpperCase();
+  return faultCodes.some(code => {
+    const c = normalizeFaultToken(code);
+    if (!c) return false;
+    const digits = c.replace(/[^0-9]/g, '');
+    const patterns = [c, digits].filter(Boolean);
+    return patterns.some(p => new RegExp(`(^|[^0-9A-Z])${p}([^0-9A-Z]|$)`, 'i').test(text));
+  });
+}
+
+function rerankDocsForFaultCodes(docs, faultCodes) {
+  if (!docs || docs.length === 0 || !faultCodes || faultCodes.length === 0) return docs;
+
+  const scored = docs.map(d => {
+    const raw = `${d?.metadata?.title || ''} ${d?.content || ''}`.toUpperCase();
+    const title = String(d?.metadata?.title || '').toUpperCase();
+    const metaFault = normalizeFaultToken(d?.metadata?.faultCode || '');
+    const chunkType = String(d?.metadata?.chunkType || '');
+
+    let codeHits = 0;
+    let titleHits = 0;
+    let metadataHits = 0;
+
+    for (const token of faultCodes) {
+      const c = normalizeFaultToken(token);
+      const digits = c.replace(/[^0-9]/g, '');
+      const patterns = [c, digits].filter(Boolean);
+
+       if (metaFault && patterns.some(p => p && (metaFault === p || metaFault.includes(p) || p.includes(metaFault)))) {
+        metadataHits += 1;
+      }
+
+      for (const p of patterns) {
+        const rx = new RegExp(`(^|[^0-9A-Z])${p}([^0-9A-Z]|$)`, 'i');
+        if (rx.test(raw)) codeHits += 1;
+        if (rx.test(title)) titleHits += 1;
+      }
+    }
+
+    const chunkTypeBonus = chunkType === 'fault_code' ? 0.16 : chunkType === 'page_window' ? 0.06 : 0;
+    const score = (d.similarity || 0) + (codeHits * 0.18) + (titleHits * 0.08) + (metadataHits * 0.22) + chunkTypeBonus;
+    return { doc: d, score };
+  });
+
+  return scored.sort((a, b) => b.score - a.score).map(s => s.doc);
+}
+
+function buildFaultCodeQueries(baseQuestion, faultCodes, sessionState) {
+  if (!faultCodes || faultCodes.length === 0) return [];
+
+  const extras = new Set();
+  const brand = sessionState?.brand ? String(sessionState.brand) : '';
+  const model = sessionState?.model ? String(sessionState.model) : '';
+
+  for (const token of faultCodes.slice(0, 4)) {
+    const normalized = normalizeFaultToken(token);
+    const digits = normalized.replace(/[^0-9]/g, '');
+    const mainCode = digits || normalized;
+    if (!mainCode) continue;
+
+    extras.add(`falha ${mainCode}`);
+    extras.add(`erro ${mainCode}`);
+    extras.add(`fault ${mainCode}`);
+    extras.add(`código ${mainCode}`);
+    extras.add(`${mainCode} vac under`);
+
+    if (brand) extras.add(`${brand} falha ${mainCode}`);
+    if (brand && model) extras.add(`${brand} ${model} falha ${mainCode}`);
+  }
+
+  // Mantém consulta original como referência sem modificar semântica
+  extras.add(String(baseQuestion || '').trim());
+
+  return Array.from(extras)
+    .map(s => s.trim())
+    .filter(s => s.length > 4 && s.length < 260)
+    .slice(0, 8);
+}
+
+const SEARCH_STOPWORDS = new Set([
+  'de', 'da', 'do', 'das', 'dos', 'a', 'o', 'as', 'os', 'e', 'ou', 'com', 'sem', 'para', 'por', 'no', 'na', 'nos', 'nas',
+  'um', 'uma', 'uns', 'umas', 'que', 'como', 'qual', 'quais', 'quando', 'onde', 'porque', 'pra', 'está', 'esta', 'estao',
+  'isso', 'essa', 'esse', 'ele', 'ela', 'eles', 'elas', 'tem', 'têm', 'ser', 'foi', 'sao', 'são', 'mais', 'menos', 'sobre',
+  'manual', 'pagina', 'página', 'favor', 'ajuda', 'preciso', 'quero', 'pode'
+]);
+
+function extractTechnicalKeywords(question, conversationHistory, signals) {
+  const history = (conversationHistory || [])
+    .filter(m => m?.role === 'user')
+    .slice(-6)
+    .map(m => m?.parts?.[0]?.text || '')
+    .join(' ');
+
+  const text = `${question || ''} ${history}`;
+  const normalized = normalizeText(text);
+  const words = normalized.match(/[a-z0-9]{3,}/g) || [];
+
+  const base = Array.from(new Set(words.filter(w => !SEARCH_STOPWORDS.has(w))));
+
+  const intentTokens = [];
+  if (isPinoutQuery(question)) intentTokens.push('pinagem', 'conector', 'diagrama', 'tabela');
+  if (classifyIntent(question) === INTENT.safetyChain) intentTokens.push('seguranca', 'cadeia', 'serie');
+  if (isStatusIndicatorQuery(question)) intentTokens.push('led', 'blink', 'legenda');
+  if ((signals?.faultCodes?.length || 0) > 0) intentTokens.push('falha', 'erro', 'fault');
+
+  const merged = Array.from(new Set([...intentTokens, ...base]));
+  return merged.slice(0, 20);
+}
+
+function buildSupplementalQueries(question, technicalKeywords, sessionState, signals) {
+  const q = String(question || '').trim();
+  const extras = new Set();
+
+  const strongTerms = (technicalKeywords || []).slice(0, 10);
+  const board = sessionState?.board ? String(sessionState.board) : '';
+  const model = sessionState?.model ? String(sessionState.model) : '';
+  const brand = sessionState?.brand ? String(sessionState.brand) : '';
+  const connector = sessionState?.connector ? String(sessionState.connector) : '';
+  const fault = (signals?.faultCodes?.[0] || signals?.errorTokens?.[0] || '').toString();
+
+  if (strongTerms.length >= 2) {
+    extras.add(`${strongTerms[0]} ${strongTerms[1]}`);
+    extras.add(`${strongTerms.slice(0, 3).join(' ')}`);
+  }
+
+  if (board) extras.add(`${board} ${q}`);
+  if (model && brand) extras.add(`${brand} ${model} ${q}`);
+  if (connector) extras.add(`${connector} pinagem tabela diagrama`);
+  if (fault) extras.add(`falha ${fault} ${board || model || ''}`.trim());
+
+  if (isStatusIndicatorQuery(question)) {
+    extras.add(`${q} tabela legenda indicador`);
+  }
+
+  if (isPinoutQuery(question)) {
+    extras.add(`${q} conector pinos tabela`);
+  }
+
+  extras.add(q);
+
+  return Array.from(extras)
+    .map(s => s.replace(/\s+/g, ' ').trim())
+    .filter(s => s.length > 5 && s.length < 300)
+    .slice(0, 8);
+}
+
+function rerankDocsByLexicalCoverage(docs, technicalKeywords) {
+  if (!docs || docs.length === 0) return docs;
+  const kws = (technicalKeywords || []).filter(Boolean).slice(0, 14);
+  if (kws.length === 0) return docs;
+
+  const scored = docs.map(doc => {
+    const text = normalizeText(`${doc?.metadata?.title || ''} ${doc?.content || ''}`);
+    const chunkType = String(doc?.metadata?.chunkType || '');
+    let hits = 0;
+    for (const kw of kws) {
+      if (text.includes(normalizeText(kw))) hits += 1;
+    }
+
+    const lexicalBonus = Math.min(0.25, hits * 0.02);
+    const typeBonus = chunkType === 'fault_code' ? 0.05 : chunkType === 'page_window' ? 0.03 : 0;
+    const score = (doc.similarity || 0) + lexicalBonus + typeBonus;
+    return { doc, score };
+  });
+
+  return scored.sort((a, b) => b.score - a.score).map(s => s.doc);
+}
+
 function extractSearchSignals(question, conversationHistory) {
   const texts = [
     question,
@@ -639,9 +841,12 @@ function extractSearchSignals(question, conversationHistory) {
     )
   ).slice(0, 6);
 
+  const faultCodes = extractStrictFaultCodes(texts);
+
   return {
     boardTokens,
     errorTokens,
+    faultCodes,
   };
 }
 
@@ -751,6 +956,9 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
     
     const signals = extractSearchSignals(question, conversationHistory);
     const sessionState = extractSessionState(question, conversationHistory, effectiveBrandFilter, signals);
+    const technicalKeywords = extractTechnicalKeywords(question, conversationHistory, signals);
+    const faultCodes = (signals?.faultCodes?.length ? signals.faultCodes : signals.errorTokens || []).slice(0, 8);
+    const faultCodeQuery = isFaultCodeQuery(question, signals);
 
     // Otis: para perguntas genéricas, exija modelo/código antes de responder.
     // Evita checklist genérico quando há muito conteúdo e o modelo muda o diagnóstico.
@@ -795,8 +1003,23 @@ ${qs.map(q => `- ${q}`).join('\n')}`,
     if (signalSuffix) enrichedQuery = `${enrichedQuery} ${signalSuffix}`;
     enrichedQuery = enrichedQuery.substring(0, 700);
     
-    // Gera 2 variações da pergunta para busca mais ampla
+    // Gera variações da pergunta para busca mais ampla
     let searchQueries = [enrichedQuery];
+
+    // Para perguntas de código/falha, injeta buscas específicas para aumentar recall.
+    const codeQueries = buildFaultCodeQueries(question, faultCodes, sessionState);
+    if (codeQueries.length) {
+      searchQueries.push(...codeQueries);
+    }
+
+    // Busca suplementar por cobertura lexical/técnica (melhora casos além de códigos).
+    const supplementalQueries = buildSupplementalQueries(question, technicalKeywords, sessionState, signals);
+    if (supplementalQueries.length) {
+      searchQueries.push(...supplementalQueries);
+    }
+
+    // Dedup inicial
+    searchQueries = Array.from(new Set(searchQueries.map(q => String(q || '').trim()).filter(Boolean))).slice(0, 10);
     try {
       const rewritePrompt = `Você é um assistente de BUSCA (não de resposta) para banco de conhecimento técnico.
 
@@ -821,6 +1044,7 @@ ${qs.map(q => `- ${q}`).join('\n')}`,
       
       if (alternatives.length > 0) {
         searchQueries.push(...alternatives);
+        searchQueries = Array.from(new Set(searchQueries.map(q => String(q || '').trim()).filter(Boolean))).slice(0, 12);
         console.log(`📝 Multi-query: ${searchQueries.length} variações de busca`);
       }
     } catch (e) {
@@ -831,10 +1055,11 @@ ${qs.map(q => `- ${q}`).join('\n')}`,
     console.log(`📚 Buscando documentos...${effectiveBrandFilter ? ` (filtro: ${effectiveBrandFilter})` : ''}`);
     
     const allResults = new Map(); // id -> {doc, maxSimilarity}
+    const perQueryTopK = faultCodeQuery ? topK * 4 : topK * 3;
     
     for (const query of searchQueries) {
       const queryEmb = await generateEmbedding(query);
-      const docs = await searchSimilar(queryEmb, topK * 2, effectiveBrandFilter); // Busca mais docs por query
+      const docs = await searchSimilar(queryEmb, perQueryTopK, effectiveBrandFilter); // Busca mais docs por query
       
       for (const doc of docs) {
         const docId = doc.metadata?.chunkIndex + '_' + (doc.metadata?.source || '');
@@ -848,14 +1073,36 @@ ${qs.map(q => `- ${q}`).join('\n')}`,
     // Converte para array e ordena por similaridade
     let mergedDocs = Array.from(allResults.values())
       .sort((a, b) => b.similarity - a.similarity);
+
+    mergedDocs = rerankDocsByLexicalCoverage(mergedDocs, technicalKeywords);
+
+    if (faultCodeQuery && faultCodes.length) {
+      mergedDocs = rerankDocsForFaultCodes(mergedDocs, faultCodes);
+    }
     
     // ═══ FILTRA POR SIMILARIDADE MÍNIMA ═══
-    let relevantDocs = mergedDocs.filter(doc => doc.similarity >= MIN_SIMILARITY);
+    const dynamicMinSimilarity = faultCodeQuery ? 0.40 : MIN_SIMILARITY;
+    let relevantDocs = mergedDocs.filter(doc => doc.similarity >= dynamicMinSimilarity);
+
+    if (faultCodeQuery && faultCodes.length) {
+      const codeMatchedDocs = mergedDocs.filter(doc => docMentionsAnyFaultCode(doc, faultCodes));
+      if (codeMatchedDocs.length) {
+        const merged = [];
+        const seen = new Set();
+        for (const doc of [...codeMatchedDocs, ...relevantDocs]) {
+          const key = `${doc?.metadata?.source || ''}::${doc?.metadata?.chunkIndex ?? ''}::${doc?.metadata?.title || ''}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          merged.push(doc);
+        }
+        relevantDocs = merged;
+      }
+    }
 
     // ═══ DESAMBIGUAÇÃO (SÉRIE/SEGURANÇA vs. CAN/BUS) ═══
     relevantDocs = rerankAndFilterDocs(relevantDocs, intent, pinoutQuery);
     
-    console.log(`📊 ${mergedDocs.length} docs únicos encontrados, ${relevantDocs.length} acima do threshold (${MIN_SIMILARITY * 100}%)`);
+    console.log(`📊 ${mergedDocs.length} docs únicos encontrados, ${relevantDocs.length} acima do threshold (${dynamicMinSimilarity * 100}%)`);
     const topSim = relevantDocs.length > 0 ? relevantDocs[0].similarity : 0;
     if (relevantDocs.length > 0) {
       console.log(`   Top sim: ${Math.round(topSim * 100)}%, Bottom sim: ${Math.round(relevantDocs[relevantDocs.length - 1].similarity * 100)}%`);

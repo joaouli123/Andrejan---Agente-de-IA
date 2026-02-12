@@ -142,9 +142,8 @@ INSERT INTO profiles (id, name, company, email, plan, credits_limit, is_admin) V
 
 INSERT INTO brands (name) VALUES ('Schindler'), ('Otis'), ('Thyssenkrupp'), ('Atlas');
 
-INSERT INTO agents (id, name, role, description, icon, color, system_instruction) VALUES
-('general-tech', 'Técnico Geral', 'Diagnóstico Universal', 'Especialista multimarcas.', 'Wrench', 'blue', 'Você é um técnico especialista...'),
-('code-master', 'Mestre dos Códigos', 'Decodificador', 'Especialista em códigos de erro.', 'Binary', 'emerald', 'Traduz códigos hexadecimais...');
+-- Sem agentes padrão iniciais.
+-- Os agentes devem ser criados diretamente no aplicativo.
 
 -- 8. POLÍTICAS DE SEGURANÇA (RLS - Acesso Público para desenvolvimento)
 ALTER TABLE brands ENABLE ROW LEVEL SECURITY;
