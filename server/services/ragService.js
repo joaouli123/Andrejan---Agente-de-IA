@@ -119,6 +119,7 @@ function getResponseCacheKey(question, brandFilter) {
 const BOARD_TOKENS = [
   'LCBII', 'LCB', 'MCSS', 'MCP', 'MCB', 'RBI', 'GMUX', 'PLA6001', 'DCB', 'PIB',
   'GCIOB', 'MCP100', 'PLA6001', 'URM', 'CAVF', 'GDCB',
+  'YOUNG', 'QUADRO DE COMANDO YOUNG',
 ];
 
 const INTENT = {
