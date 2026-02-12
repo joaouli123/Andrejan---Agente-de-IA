@@ -135,7 +135,7 @@ const AIChat: React.FC = () => {
                   <span className="w-2 h-2 rounded-full bg-blue-600 animate-bounce" style={{ animationDelay: '180ms', animationDuration: '1.4s' }} />
                   <span className="w-2 h-2 rounded-full bg-blue-600 animate-bounce" style={{ animationDelay: '360ms', animationDuration: '1.4s' }} />
                 </div>
-                <span className="text-slate-500 text-sm">escrevendo...</span>
+                <span className="text-slate-500 text-sm">escrevendo</span>
              </div>
           </div>
         )}

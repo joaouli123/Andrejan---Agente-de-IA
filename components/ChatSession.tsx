@@ -427,7 +427,7 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
                   <span className="w-2 h-2 rounded-full bg-voltz-primary animate-bounce" style={{ animationDelay: '180ms', animationDuration: '1.4s' }} />
                   <span className="w-2 h-2 rounded-full bg-voltz-primary animate-bounce" style={{ animationDelay: '360ms', animationDuration: '1.4s' }} />
                 </div>
-                <span className="text-slate-500 text-sm font-medium">escrevendo...</span>
+                <span className="text-slate-500 text-sm font-medium">escrevendo</span>
                 </div>
             </div>
             )}
