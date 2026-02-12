@@ -422,8 +422,12 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
             {isLoading && (
             <div className="flex justify-start animate-fade-in">
                 <div className="flex items-center space-x-3 bg-white px-5 py-3 rounded-2xl rounded-tl-sm border border-slate-200 shadow-sm">
-                    <Loader2 className="w-4 h-4 text-voltz-primary animate-spin" />
-                    <span className="text-slate-500 text-sm font-medium">Analisando base de dados...</span>
+                <div className="flex items-end gap-1">
+                  <span className="w-2 h-2 rounded-full bg-voltz-primary animate-bounce" style={{ animationDelay: '0ms', animationDuration: '1.4s' }} />
+                  <span className="w-2 h-2 rounded-full bg-voltz-primary animate-bounce" style={{ animationDelay: '180ms', animationDuration: '1.4s' }} />
+                  <span className="w-2 h-2 rounded-full bg-voltz-primary animate-bounce" style={{ animationDelay: '360ms', animationDuration: '1.4s' }} />
+                </div>
+                <span className="text-slate-500 text-sm font-medium">escrevendo...</span>
                 </div>
             </div>
             )}

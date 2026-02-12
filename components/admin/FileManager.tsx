@@ -197,13 +197,13 @@ export default function FileManager() {
         }
 
         // Fase 2: Polling do status de processamento
-        updateFileStatus(i, { status: 'processing', message: 'Extraindo texto do PDF...' });
+        updateFileStatus(i, { status: 'processing', message: 'Extraindo texto do PDF (OCR em imagens/circuitos pode demorar)...' });
 
         const result = await pollTaskStatus(taskId, (task: any) => {
           // Atualiza UI com progresso real do servidor
           const progressMsg = task.message || 'Processando...';
           if (task.status === 'extracting') {
-            updateFileStatus(i, { status: 'processing', message: '📄 Extraindo texto do PDF...' });
+            updateFileStatus(i, { status: 'processing', message: task.message || '📄 Extraindo texto do PDF (OCR pode demorar em arquivos grandes)...' });
           } else if (task.status === 'embedding') {
             updateFileStatus(i, { status: 'processing', message: `🧠 ${progressMsg}` });
           } else if (task.status === 'saving') {
@@ -277,7 +277,7 @@ export default function FileManager() {
 
   /** Faz polling do status de uma tarefa no servidor até completar ou dar erro */
   async function pollTaskStatus(taskId: string, onProgress: (task: any) => void): Promise<any> {
-    const maxAttempts = 600; // 10 min max (600 * 1s)
+    const maxAttempts = 1800; // 30 min max (OCR pesado pode demorar)
     let attempts = 0;
     
     while (attempts < maxAttempts) {

@@ -381,7 +381,7 @@ async function processUploadInBackground(taskId, filePath, originalName, brandNa
     
     // Fase 1: Extrair texto (com OCR automático para scans/imagens)
     task.status = 'extracting';
-    task.message = 'Extraindo texto do PDF...';
+    task.message = 'Extraindo texto do PDF (OCR em imagens/circuitos pode demorar)...';
     
     let extracted;
     try {
