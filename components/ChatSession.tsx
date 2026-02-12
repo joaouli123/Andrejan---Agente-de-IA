@@ -31,7 +31,7 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const agents = Storage.getAgents();
+  const [agents, setAgents] = useState<Agent[]>(Storage.getAgents());
   
   // Sidebar State
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -43,6 +43,12 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
 
   // Load session on sessionId change
   useEffect(() => {
+    const syncAgents = async () => {
+      await Storage.syncAgentsFromDatabase();
+      setAgents(Storage.getAgents());
+    };
+    syncAgents();
+
     const loaded = Storage.getSession(sessionId);
     if (loaded) {
       setSession(loaded);

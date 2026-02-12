@@ -70,7 +70,11 @@ export const AgentsGrid: React.FC<{ user: UserProfile, onSelectAgent: (id: strin
   const [agents, setAgents] = useState<Agent[]>([]);
 
   useEffect(() => {
-      setAgents(Storage.getAgents());
+      const syncAgents = async () => {
+        await Storage.syncAgentsFromDatabase();
+        setAgents(Storage.getAgents());
+      };
+      syncAgents();
   }, []);
 
   const customAgents = agents.filter(a => a.isCustom || true); // Todos os agentes são tratados igualmente
@@ -130,9 +134,13 @@ export const HistoryView: React.FC<{
   const [collapsedGroups, setCollapsedGroups] = useState<{[key: string]: boolean}>({});
 
   useEffect(() => {
-     const allSessions = Storage.getSessions(true);
-     setLocalSessions(allSessions.filter(s => showArchived ? s.isArchived : !s.isArchived));
-     setAgents(Storage.getAgents());
+      const load = async () => {
+       const allSessions = Storage.getSessions(true);
+       setLocalSessions(allSessions.filter(s => showArchived ? s.isArchived : !s.isArchived));
+       await Storage.syncAgentsFromDatabase();
+       setAgents(Storage.getAgents());
+      };
+      load();
   }, [sessions, showArchived]);
 
   const toggleGroup = (agentId: string) => {

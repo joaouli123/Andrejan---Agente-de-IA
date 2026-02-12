@@ -38,9 +38,15 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ user, onAgentCreated }) => 
             if (data) setBrands(data);
         };
         fetchBrands();
+
+        const syncAgents = async () => {
+            const synced = await Storage.syncAgentsFromDatabase();
+            setAgents(synced);
+        };
+        syncAgents();
     }, []);
 
-    const handleCreate = (e: React.FormEvent) => {
+    const handleCreate = async (e: React.FormEvent) => {
         e.preventDefault();
         
         const newAgent: Agent = {
@@ -56,16 +62,16 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ user, onAgentCreated }) => 
             createdBy: user.id
         };
 
-        Storage.saveAgent(newAgent);
+        await Storage.saveAgentToDatabase(newAgent);
         setAgents(Storage.getAgents()); // Refresh list
         onAgentCreated(); // Notify parent
         resetForm();
         setView('list');
     };
 
-    const handleDelete = (id: string) => {
+    const handleDelete = async (id: string) => {
         if (confirm('Tem certeza que deseja excluir este agente?')) {
-            Storage.deleteAgent(id);
+            await Storage.deleteAgentFromDatabase(id);
             setAgents(Storage.getAgents());
             onAgentCreated();
         }

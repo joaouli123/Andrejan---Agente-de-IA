@@ -1,10 +1,12 @@
 ﻿import { ChatSession, Message, UserProfile, Agent, DEFAULT_AGENTS, Brand, Model } from '../types';
+import { supabase } from './supabase';
 
 // Storage service for local data management
 const CHATS_KEY = 'elevex_chats';
 const CURRENT_USER_KEY = 'elevex_current_user';
 const ADMIN_USERS_KEY = 'elevex_admin_users';
 const CUSTOM_AGENTS_KEY = 'elevex_custom_agents';
+const AGENTS_CACHE_KEY = 'elevex_agents_cache';
 const BRANDS_KEY = 'elevex_brands';
 const MODELS_KEY = 'elevex_models';
 
@@ -194,6 +196,16 @@ export const archiveSession = (sessionId: string, archived: boolean) => {
 // --- AGENTS ---
 
 export const getAgents = (): Agent[] => {
+    const cached = localStorage.getItem(AGENTS_CACHE_KEY);
+    if (cached) {
+        try {
+            const parsed = JSON.parse(cached);
+            if (Array.isArray(parsed)) return parsed;
+        } catch {
+            // fallback para storage antigo
+        }
+    }
+
     const custom = JSON.parse(localStorage.getItem(CUSTOM_AGENTS_KEY) || '[]');
     return [...DEFAULT_AGENTS, ...custom];
 };
@@ -207,12 +219,130 @@ export const saveAgent = (agent: Agent) => {
         custom.push(agent);
     }
     localStorage.setItem(CUSTOM_AGENTS_KEY, JSON.stringify(custom));
+
+    // Atualiza cache completo em memória local
+    const full = [...DEFAULT_AGENTS, ...custom];
+    localStorage.setItem(AGENTS_CACHE_KEY, JSON.stringify(full));
 };
 
 export const deleteAgent = (agentId: string) => {
     const custom = JSON.parse(localStorage.getItem(CUSTOM_AGENTS_KEY) || '[]');
     const filtered = custom.filter((a: Agent) => a.id !== agentId);
     localStorage.setItem(CUSTOM_AGENTS_KEY, JSON.stringify(filtered));
+
+    const full = [...DEFAULT_AGENTS, ...filtered];
+    localStorage.setItem(AGENTS_CACHE_KEY, JSON.stringify(full));
+};
+
+type SupabaseAgentRow = {
+    id: string;
+    name: string;
+    role: string | null;
+    description: string | null;
+    icon: string | null;
+    color: string | null;
+    system_instruction: string | null;
+    is_custom: boolean | null;
+    created_by: string | null;
+    brands?: { name?: string } | null;
+};
+
+const mapSupabaseAgentToApp = (row: SupabaseAgentRow): Agent => ({
+    id: row.id,
+    name: row.name,
+    role: row.role || '',
+    description: row.description || '',
+    icon: row.icon || 'Bot',
+    color: row.color || 'blue',
+    systemInstruction: row.system_instruction || '',
+    brandName: row.brands?.name || undefined,
+    isCustom: !!row.is_custom,
+    createdBy: row.created_by || undefined,
+});
+
+const setAgentsCache = (agents: Agent[]) => {
+    localStorage.setItem(AGENTS_CACHE_KEY, JSON.stringify(agents));
+    localStorage.setItem(CUSTOM_AGENTS_KEY, JSON.stringify(agents.filter(a => a.isCustom)));
+};
+
+export const syncAgentsFromDatabase = async (): Promise<Agent[]> => {
+    try {
+        const user = getUserProfile();
+
+        const { data, error } = await supabase
+            .from('agents')
+            .select('id,name,role,description,icon,color,system_instruction,is_custom,created_by,brand_id,brands(name)')
+            .order('name');
+
+        if (error || !data) {
+            return getAgents();
+        }
+
+        const allAgents = (data as SupabaseAgentRow[]).map(mapSupabaseAgentToApp);
+
+        // Padrão + custom do usuário logado
+        const filtered = allAgents.filter(a => !a.isCustom || (user && a.createdBy === user.id));
+        setAgentsCache(filtered);
+        return filtered;
+    } catch {
+        return getAgents();
+    }
+};
+
+export const saveAgentToDatabase = async (agent: Agent): Promise<Agent> => {
+    const user = getUserProfile();
+
+    // Resolve brand_id pela brandName (quando informado)
+    let brandId: string | null = null;
+    if (agent.brandName) {
+        const { data: brand } = await supabase
+            .from('brands')
+            .select('id')
+            .eq('name', agent.brandName)
+            .maybeSingle();
+        brandId = brand?.id || null;
+    }
+
+    const payload = {
+        id: agent.id,
+        name: agent.name,
+        role: agent.role,
+        description: agent.description,
+        icon: agent.icon,
+        color: agent.color,
+        system_instruction: agent.systemInstruction,
+        brand_id: brandId,
+        is_custom: true,
+        created_by: user?.id || agent.createdBy || null,
+    };
+
+    const { error } = await supabase.from('agents').upsert([payload]);
+    if (error) {
+        // fallback local para não quebrar UX
+        saveAgent(agent);
+        return agent;
+    }
+
+    await syncAgentsFromDatabase();
+    return agent;
+};
+
+export const deleteAgentFromDatabase = async (agentId: string): Promise<void> => {
+    try {
+        const user = getUserProfile();
+        let query = supabase.from('agents').delete().eq('id', agentId);
+        if (user?.id) query = query.eq('created_by', user.id);
+
+        const { error } = await query;
+        if (error) {
+            deleteAgent(agentId);
+            return;
+        }
+
+        await syncAgentsFromDatabase();
+    } catch {
+        deleteAgent(agentId);
+    }
 };
 
 // --- ADMIN ---
