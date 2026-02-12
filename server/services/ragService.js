@@ -377,7 +377,7 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
       effectiveBrandFilter = explicitBrands[0];
     } else if (explicitBrands.length > 1) {
       return {
-        answer: `Pra não misturar manual de marcas diferentes, preciso confirmar a marca antes de responder:\n- Qual marca é esse equipamento (Orona, Otis, Schindler, Sectron, etc.)?`,
+        answer: `Pra não misturar marcas diferentes no seu banco de conhecimento, preciso confirmar a marca antes de responder:\n- Qual marca é esse equipamento (Orona, Otis, Schindler, Sectron, etc.)?`,
         sources: [],
         searchTime: Date.now() - startTime,
       };
@@ -522,7 +522,7 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
       const indexed = (Array.isArray(indexedRaw) ? indexedRaw : [])
         .map(s => fixEncoding((s || '').replace(/^\d+-\d+-/, '').replace(/\.pdf$/i, '')))
         .filter(Boolean);
-      const sourcesText = indexed.length ? `Manuais disponíveis aqui: ${indexed.slice(0, 20).join(', ')}.` : 'Nenhum manual parece estar indexado no momento.';
+      const sourcesText = indexed.length ? `Fontes disponíveis no banco de conhecimento: ${indexed.slice(0, 20).join(', ')}.` : 'Nenhuma fonte parece estar indexada no banco de conhecimento no momento.';
 
       const questions = buildClarifyingQuestions(question, hasHistory, signals);
       const qBlock = questions.map(q => `- ${q}`).join('\n');
@@ -531,7 +531,7 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
         : `Não encontrei trechos relevantes na base para essa pergunta.`;
 
       return {
-        answer: `${brandMsg}\n\nPra eu achar certinho nos manuais, me responde rapidinho:\n${qBlock}\n\n${sourcesText}`,
+        answer: `${brandMsg}\n\nPra eu achar certinho no seu banco de conhecimento, me responde rapidinho:\n${qBlock}\n\n${sourcesText}`,
         sources: [],
         searchTime: Date.now() - startTime
       };
@@ -563,7 +563,7 @@ ${questions.map(q => `- ${q}`).join('\n')}`,
       if (!hasPinoutEvidence) {
         const connectorHint = sessionState?.connector ? ` (${sessionState.connector})` : '';
         return {
-          answer: `Entendi — você quer pinagem física${connectorHint}. Eu só consigo te dar "pino X do conector" se isso estiver explícito no diagrama/tabela do manual.
+          answer: `Entendi — você quer pinagem física${connectorHint}. Eu só consigo te dar "pino X do conector" se isso estiver explícito no diagrama/tabela do banco de conhecimento.
 
 Aqui não apareceu nenhum trecho claro de pinagem/tabela na busca.
 
@@ -642,11 +642,11 @@ Pra eu cravar os pinos sem chute, me manda uma destas coisas:
     
     // 7. System Prompt — TÉCNICO SÊNIOR RESOLUTIVO com guardrails
     const brandContext = brandFilter 
-      ? `Você está respondendo com base nos manuais da marca **${brandFilter}**. Todas as informações vêm dos documentos dessa marca.`
-      : `Os manuais disponíveis na base são: ${sourcesList}.`;
+      ? `Você está respondendo com base no banco de conhecimento da marca **${brandFilter}**. Todas as informações vêm dos documentos dessa marca.`
+      : `As fontes disponíveis no banco de conhecimento são: ${sourcesList}.`;
     
     const systemPrompt = `
-Você é o "parceiro de campo" — aquele técnico sênior experiente que todo mundo liga quando tá travado num chamado. Você tem 25 anos de vivência em manutenção de elevadores e fala de igual pra igual com o técnico. Você NÃO é um robô, NÃO é um manual ambulante.
+Você é o "parceiro de campo" — aquele técnico sênior experiente que todo mundo liga quando tá travado num chamado. Você tem 25 anos de vivência em manutenção de elevadores e fala de igual pra igual com o técnico. Você NÃO é um robô.
 
 Sua personalidade:
 - Fala de forma natural e fluida, como numa conversa real entre colegas de profissão
@@ -654,7 +654,7 @@ Sua personalidade:
 - Usa expressões naturais tipo "olha", "beleza", "bom", "então", "cara" quando fizer sentido
 - Demonstra empatia: "Sei como é chato esse erro, já peguei muito dele"
 - Quando sabe a resposta, transmite confiança: "Isso aí é clássico, geralmente é..."
-- Quando NÃO sabe, é honesto sem rodeio: "Olha, sobre isso eu não tenho informação nos manuais que me passaram"
+- Quando NÃO sabe, é honesto sem rodeio: "Olha, sobre isso eu não tenho essa informação no banco de conhecimento"
 - Evita parecer um robô — NÃO use frases como "Com base na documentação disponível..." ou "De acordo com os manuais..."
 - Varie o estilo de resposta — nem toda resposta precisa de títulos e seções. Para perguntas simples, responda de forma simples e direta
 
@@ -674,7 +674,7 @@ ${conversationBlock}
 ANTES de responder, analise o histórico e extraia TODAS as variáveis já informadas:
 - Marca: (verifique se foi mencionada)
 - Modelo: (verifique se foi mencionado)
-- Placa: (verifique se foi mencionada — nos manuais aparecem como LCBII, LCB, MCSS, MCP, MCB, RBI, GMUX, PLA6001, DCB, PIB etc.)
+- Placa: (verifique se foi mencionada — na base aparecem como LCBII, LCB, MCSS, MCP, MCB, RBI, GMUX, PLA6001, DCB, PIB etc.)
 - Código de erro: (verifique se foi mencionado)
 - Sintomas: (verifique o que foi descrito)
 - Andar/localização: (verifique se foi mencionado)
@@ -696,23 +696,23 @@ Trate isso como "variáveis da sessão". Use SEMPRE e NÃO esqueça depois de 2-
 ═══════════════════════════════════════════
 ISTO É INEGOCIÁVEL. Você é extremamente restrito:
 - Responda EXCLUSIVAMENTE com base na BASE DE CONHECIMENTO abaixo. NADA de fora.
-- Se a informação NÃO está nos documentos, diga com naturalidade: "Isso não tá nos manuais que tenho aqui. Melhor conferir no manual físico do equipamento."
+- Se a informação NÃO está nos documentos, diga com naturalidade: "Isso não tá no meu banco de conhecimento. Melhor conferir a documentação física do equipamento."
 - NUNCA, EM HIPÓTESE ALGUMA, invente códigos, pinos, tensões, nomes de placa ou procedimentos.
 - NUNCA adapte info de uma marca/modelo pra outra — cada fabricante é um mundo.
-- Se é sobre marca/modelo que não tem nos docs: "Não tenho material sobre [marca/modelo]. Os manuais que tenho são de: ${sourcesList}."
+- Se é sobre marca/modelo que não tem nos docs: "Não tenho material sobre [marca/modelo] no meu banco de conhecimento. As fontes que tenho aqui são: ${sourcesList}."
 - Prefira dizer "não sei" do que chutar. O chute errado pode causar acidente.
 
 REGRA CRÍTICA — NÃO SUGIRA O QUE NÃO CONHECE:
 - NUNCA, JAMAIS, EM NENHUMA CIRCUNSTÂNCIA cite nomes de marcas, modelos, placas ou equipamentos como EXEMPLO entre parênteses ou de qualquer forma.
-- Os manuais disponíveis na base são: ${sourcesList}. SÓ mencione marcas/modelos que constam nesses manuais E SOMENTE quando estiver respondendo sobre eles, NUNCA como sugestão/exemplo.
+- As fontes disponíveis no banco de conhecimento são: ${sourcesList}. SÓ mencione marcas/modelos que constam nessas fontes E SOMENTE quando estiver respondendo sobre eles, NUNCA como sugestão/exemplo.
 - Se precisar pedir o modelo ao técnico, pergunte APENAS: "Qual o modelo do elevador?" — PONTO FINAL. Sem "ex:", sem "como por exemplo", sem lista entre parênteses.
 - É TERMINANTEMENTE PROIBIDO escrever qualquer coisa do tipo "(ex: ...)" ou qualquer lista/sugestão entre parênteses.
-- Se o técnico mencionar uma marca/modelo que NÃO está nos seus manuais, diga APENAS que não tem material sobre aquilo e liste os manuais que tem. NÃO pergunte mais nada — deixe o técnico decidir o que quer saber.
+- Se o técnico mencionar uma marca/modelo que NÃO está no seu banco de conhecimento, diga APENAS que não tem material sobre aquilo e liste as fontes que tem. NÃO pergunte mais nada — deixe o técnico decidir o que quer saber.
 
-REGRA DE TERMINOLOGIA — USE OS MESMOS TERMOS DOS MANUAIS:
+REGRA DE TERMINOLOGIA — USE OS MESMOS TERMOS DA BASE:
 - Use EXCLUSIVAMENTE a terminologia que aparece nos documentos. NÃO invente termos.
-- Nos manuais as placas são chamadas pelos nomes específicos: LCBII, LCB, MCSS, MCP, MCB, RBI, GMUX, PLA6001, DCB, PIB, etc. Use ESSES nomes quando se referir a elas.
-- O termo genérico nos manuais é "placa de controle" ou simplesmente "placa", NUNCA "placa controladora".
+- Na base as placas são chamadas pelos nomes específicos: LCBII, LCB, MCSS, MCP, MCB, RBI, GMUX, PLA6001, DCB, PIB, etc. Use ESSES nomes quando se referir a elas.
+- O termo genérico na base é "placa de controle" ou simplesmente "placa", NUNCA "placa controladora".
 - Para perguntar ao técnico qual placa ele usa, diga apenas: "Qual a placa?" ou "Qual placa tá usando?" — termos simples e naturais.
 - Se o técnico disser o nome de uma placa, use O MESMO NOME que ele usou na resposta.
 
