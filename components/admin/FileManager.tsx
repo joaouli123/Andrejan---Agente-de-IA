@@ -88,6 +88,7 @@ export default function FileManager() {
     if (files.length === 0) return;
     setCheckingDuplicates(true);
     const dupes = new Set<string>();
+    let serverCheckOk = false;
     
     // 1. Verificar no servidor (vector store + disco)
     try {
@@ -99,26 +100,29 @@ export default function FileManager() {
       if (res.ok) {
         const data = await res.json();
         (data.duplicates || []).forEach((d: string) => dupes.add(d));
+        serverCheckOk = true;
       }
     } catch (err) {
       console.warn('Erro ao verificar duplicatas no servidor:', err);
     }
     
-    // 2. Fallback: verificar no Supabase (source_files)
-    try {
-      const titles = files.map(f => f.name.replace('.pdf', ''));
-      const { data: existing } = await supabase
-        .from('source_files')
-        .select('title')
-        .in('title', titles);
-      if (existing && existing.length > 0) {
-        existing.forEach((e: any) => {
-          const match = files.find(f => f.name.replace('.pdf', '') === e.title);
-          if (match) dupes.add(match.name);
-        });
+    // 2. Fallback: só verifica no Supabase se o servidor estiver indisponível
+    if (!serverCheckOk) {
+      try {
+        const titles = files.map(f => f.name.replace('.pdf', ''));
+        const { data: existing } = await supabase
+          .from('source_files')
+          .select('title')
+          .in('title', titles);
+        if (existing && existing.length > 0) {
+          existing.forEach((e: any) => {
+            const match = files.find(f => f.name.replace('.pdf', '') === e.title);
+            if (match) dupes.add(match.name);
+          });
+        }
+      } catch (err) {
+        console.warn('Erro ao verificar duplicatas no Supabase:', err);
       }
-    } catch (err) {
-      console.warn('Erro ao verificar duplicatas no Supabase:', err);
     }
     
     setDuplicateFiles(dupes);
