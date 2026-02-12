@@ -655,7 +655,26 @@ function validateEnv() {
 const distPath = path.join(__dirname, '..', 'dist');
 if (fs.existsSync(distPath)) {
   console.log('📦 Servindo frontend estático de:', distPath);
-  app.use(express.static(distPath));
+  app.use(express.static(distPath, {
+    etag: true,
+    lastModified: true,
+    setHeaders: (res, filePath) => {
+      // Evita ficar preso em um index.html antigo (HTML aponta para bundle antigo)
+      if (filePath.endsWith(`${path.sep}index.html`)) {
+        res.setHeader('Cache-Control', 'no-store');
+        return;
+      }
+
+      // Assets do Vite são versionados por hash no nome do arquivo
+      if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        return;
+      }
+
+      // Default conservador
+      res.setHeader('Cache-Control', 'public, max-age=0');
+    }
+  }));
 }
 
 async function startServer() {
@@ -668,6 +687,8 @@ async function startServer() {
       app.get('*', (req, res, next) => {
         // Não interceptar rotas de API
         if (req.path.startsWith('/api/')) return next();
+        // SPA fallback: nunca cachear HTML
+        res.setHeader('Cache-Control', 'no-store');
         res.sendFile(path.join(distPath, 'index.html'));
       });
     }
