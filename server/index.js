@@ -327,12 +327,13 @@ app.post('/api/check-duplicates', adminMiddleware, async (req, res) => {
     }
     const loading = isLoading();
     const results = await Promise.all(fileNames.map(async (name) => {
-      // Verifica no vector store (se já carregou) OU no disco como fallback
+      // Fonte de verdade: vector store.
+      // Não usar disco para "já indexado", pois pode haver PDFs antigos após reset do índice.
       const inVectorStore = !loading ? await hasSource(name) : false;
-      const onDisk = fileExistsOnDisk(name);
       return {
         name,
-        exists: inVectorStore || onDisk
+        exists: inVectorStore,
+        inVectorStore,
       };
     }));
     const duplicates = results.filter(r => r.exists).map(r => r.name);
@@ -358,8 +359,7 @@ app.post('/api/upload', adminMiddleware, uploadLimiter, upload.single('pdf'), as
   // Exclui o arquivo recém-salvo pelo multer para não dar falso positivo
   const uploadedFilename = path.basename(req.file.path);
   const alreadyInVectorStore = !isLoading() ? await hasSource(originalName) : false;
-  const alreadyOnDisk = fileExistsOnDisk(originalName, uploadedFilename);
-  if (alreadyInVectorStore || alreadyOnDisk) {
+  if (alreadyInVectorStore) {
     // Remove o arquivo enviado pois já existe
     try { fs.unlinkSync(req.file.path); } catch {}
     console.log(`⏭️ Arquivo já indexado, ignorado: ${originalName}`);
@@ -585,6 +585,34 @@ app.delete('/api/clear', adminMiddleware, async (req, res) => {
   try {
     await clearCollection();
     res.json({ success: true, message: 'Banco de vetores limpo' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Limpa tudo (vetor + PDFs em disco) (admin only)
+ */
+app.delete('/api/clear-all', adminMiddleware, async (req, res) => {
+  try {
+    await clearCollection();
+
+    let removedFiles = 0;
+    if (fs.existsSync(PDF_DIR)) {
+      const files = listPdfFilesRecursive(PDF_DIR);
+      for (const filePath of files) {
+        try {
+          fs.unlinkSync(filePath);
+          removedFiles += 1;
+        } catch {}
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Base vetorial e PDFs em disco limpos',
+      removedFiles,
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
