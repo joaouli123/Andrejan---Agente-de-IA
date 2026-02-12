@@ -16,6 +16,9 @@ const CHUNK_OVERLAP = 200;
 // Limiar: se uma página tem menos de X chars de texto, provavelmente é scan/imagem
 const OCR_TEXT_THRESHOLD = 50;
 
+// Limiar por página: mesmo PDFs "bons" podem ter páginas de diagramas/tabelas como imagem
+const OCR_TEXT_THRESHOLD_PER_PAGE = 120;
+
 // Cache do worker do Tesseract para reutilização
 let tesseractWorker = null;
 
@@ -41,6 +44,46 @@ async function safePdfParse(dataBuffer) {
     return data;
   } catch (error) {
     console.warn(`   ⚠️ pdf-parse falhou: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * Extrai texto com pdf-parse separando por páginas.
+ * Isso permite OCR seletivo somente nas páginas que são imagens (pinagem/diagramas).
+ */
+async function safePdfParseByPage(dataBuffer) {
+  try {
+    const pages = [];
+    const data = await pdfParse(dataBuffer, {
+      max: 0,
+      pagerender: async (pageData) => {
+        try {
+          const textContent = await pageData.getTextContent({ normalizeWhitespace: true });
+          const strings = textContent.items.map((item) => item.str);
+          const pageText = strings.join(' ').replace(/\s+/g, ' ').trim();
+          pages.push(pageText);
+          return pageText;
+        } catch {
+          pages.push('');
+          return '';
+        }
+      },
+    });
+
+    const combined = pages
+      .map((t, idx) => (t && t.trim() ? `--- Página ${idx + 1} ---\n${t.trim()}` : `--- Página ${idx + 1} ---`))
+      .join('\n\n');
+
+    return {
+      text: combined.trim(),
+      numpages: data.numpages || pages.length,
+      info: data.info || {},
+      metadata: data.metadata || {},
+      pages,
+    };
+  } catch (error) {
+    console.warn(`   ⚠️ pdf-parse (por página) falhou: ${error.message}`);
     return null;
   }
 }
@@ -89,13 +132,16 @@ export async function extractTextWithOCR(filePath, onProgress) {
     throw new Error('Arquivo PDF vazio (0 bytes)');
   }
 
-  // 1. Tenta extrair texto com pdf-parse (protegido)
-  const pdfData = await safePdfParse(dataBuffer);
+  // 1. Tenta extrair texto com pdf-parse por página (melhor para tabelas/diagramas)
+  const pdfDataByPage = await safePdfParseByPage(dataBuffer);
+  const pdfData = pdfDataByPage || await safePdfParse(dataBuffer);
   
   let parsedText = '';
   let numPages = 0;
   let info = {};
   let metadata = {};
+
+  const parsedPages = pdfDataByPage?.pages || null;
 
   if (pdfData) {
     parsedText = pdfData.text || '';
@@ -107,8 +153,21 @@ export async function extractTextWithOCR(filePath, onProgress) {
   // 2. Verifica se o texto é suficiente
   const avgCharsPerPage = numPages > 0 ? parsedText.length / numPages : 0;
   const hasGoodText = parsedText.trim().length > 200 && avgCharsPerPage >= OCR_TEXT_THRESHOLD;
-  
-  if (hasGoodText) {
+
+  // Define páginas candidatas a OCR (diagramas/tabelas em imagem)
+  // Se não temos parsedPages, fica vazio e o fluxo cai no OCR completo.
+  const pagesToOCR = new Set();
+  if (parsedPages && parsedPages.length) {
+    for (let i = 0; i < parsedPages.length; i++) {
+      const t = (parsedPages[i] || '').trim();
+      if (t.length < OCR_TEXT_THRESHOLD_PER_PAGE) {
+        pagesToOCR.add(i + 1);
+      }
+    }
+  }
+
+  // Se o texto geral está bom, ainda assim fazemos OCR seletivo nas páginas fracas.
+  if (hasGoodText && pagesToOCR.size === 0) {
     if (onProgress) onProgress({ phase: 'text', message: `Texto extraído normalmente (${parsedText.length} chars)` });
     return {
       text: parsedText,
@@ -119,8 +178,10 @@ export async function extractTextWithOCR(filePath, onProgress) {
     };
   }
   
-  // 3. PDF sem texto suficiente ou pdf-parse falhou — tentar OCR
-  const reason = !pdfData ? 'pdf-parse falhou completamente' : `pouco texto (${Math.round(avgCharsPerPage)} chars/pág)`;
+  // 3. PDF sem texto suficiente OU páginas fracas detectadas — tentar OCR
+  const reason = !pdfData
+    ? 'pdf-parse falhou completamente'
+    : (hasGoodText ? `páginas com pouco texto detectadas (${pagesToOCR.size})` : `pouco texto (${Math.round(avgCharsPerPage)} chars/pág)`);
   console.log(`   🔍 ${reason} — ativando OCR...`);
   if (onProgress) onProgress({ phase: 'ocr_start', message: 'PDF com imagens detectado, iniciando OCR...' });
   
@@ -130,6 +191,16 @@ export async function extractTextWithOCR(filePath, onProgress) {
   try {
     const { pdf } = await import('pdf-to-img');
     const worker = await getTesseractWorker();
+
+    // Melhor para tabelas/diagramas: preserva espaços e usa segmentação mais "blocada"
+    try {
+      await worker.setParameters({
+        preserve_interword_spaces: '1',
+        tessedit_pageseg_mode: '6',
+      });
+    } catch {
+      // ignora se não suportar
+    }
     
     let pageNum = 0;
     let pdfIterator;
@@ -149,11 +220,16 @@ export async function extractTextWithOCR(filePath, onProgress) {
     
     for await (const pageImage of pdfIterator) {
       pageNum++;
+
+      // OCR seletivo: se temos lista de páginas, só reconhece nelas
+      if (pagesToOCR.size > 0 && !pagesToOCR.has(pageNum)) {
+        continue;
+      }
       
       if (onProgress) {
         onProgress({ 
           phase: 'ocr', 
-          message: `OCR página ${pageNum}/${numPages || '?'}...`,
+          message: `OCR página ${pageNum}/${numPages || '?'}${pagesToOCR.size > 0 ? ' (seletivo)' : ''}...`,
           progress: numPages > 0 ? Math.round((pageNum / numPages) * 100) : 0
         });
       }
@@ -163,7 +239,7 @@ export async function extractTextWithOCR(filePath, onProgress) {
         const pageText = result.data.text.trim();
         
         if (pageText.length > 10) {
-          ocrText += `\n--- Página ${pageNum} ---\n${pageText}\n`;
+          ocrText += `\n--- Página ${pageNum} (OCR) ---\n${pageText}\n`;
           ocrPages++;
         }
         
