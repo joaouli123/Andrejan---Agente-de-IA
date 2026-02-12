@@ -5,7 +5,7 @@
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { generateEmbedding } from './embeddingService.js';
-import { searchSimilar, getIndexedSources } from './vectorStoreAdapter.js';
+import { searchSimilar, searchLexical, getIndexedSources } from './vectorStoreAdapter.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -38,6 +38,29 @@ const RESPONSE_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 const RESPONSE_CACHE_MAX = 50;
 // Bump this when changing prompts/guardrails to avoid serving stale cached answers
 const RESPONSE_CACHE_VERSION = '2026-02-12-10';
+
+const ENABLE_CROSS_RERANKER = /^(1|true|yes)$/i.test(String(process.env.RAG_ENABLE_CROSS_RERANKER || '').trim());
+const CROSS_RERANKER_CANDIDATES = Math.max(5, parseInt(process.env.RAG_CROSS_RERANKER_CANDIDATES || '18', 10));
+const CROSS_RERANKER_KEEP = Math.max(5, parseInt(process.env.RAG_CROSS_RERANKER_KEEP || '12', 10));
+const TELEMETRY_BUFFER_MAX = Math.max(50, parseInt(process.env.RAG_TELEMETRY_BUFFER_MAX || '400', 10));
+const telemetryBuffer = [];
+
+function pushRagTelemetry(entry) {
+  if (!entry || typeof entry !== 'object') return;
+  telemetryBuffer.push({ ...entry, at: new Date().toISOString() });
+  if (telemetryBuffer.length > TELEMETRY_BUFFER_MAX) {
+    telemetryBuffer.splice(0, telemetryBuffer.length - TELEMETRY_BUFFER_MAX);
+  }
+}
+
+export function getRecentRagTelemetry(limit = 100) {
+  const capped = Math.max(1, Math.min(500, Number(limit) || 100));
+  return telemetryBuffer.slice(-capped).reverse();
+}
+
+export function clearRagTelemetry() {
+  telemetryBuffer.length = 0;
+}
 
 /**
  * Corrige encoding corrompido (UTF-8 decodificado como Latin-1)
@@ -371,6 +394,32 @@ function containsRiskyActionLanguage(text) {
 
 function containsBlinkInterpretation(text) {
   return /\b(pisca|piscando|blink|4x\/s|\d+\s*x\s*a\s*cada\s*\d+\s*(s|seg|segundos))\b/i.test(text || '');
+}
+
+function isCriticalLiteralQuestion(question) {
+  return /\b(tens[aã]o|vac|vdc|conector|pinagem|pino|borne|fault|erro|falha|c[oó]digo|jump(er)?|bypass|ponte(ar)?)\b/i.test(question || '');
+}
+
+function hasLiteralCriticalEvidence(question, docs) {
+  const text = (docs || []).map(d => `${d?.metadata?.title || ''} ${d?.content || ''}`).join('\n').toLowerCase();
+  if (!text) return false;
+
+  const checks = [];
+  if (/\b(tens[aã]o|vac|vdc)\b/i.test(question || '')) {
+    checks.push(/\b\d{1,4}(?:[\.,]\d{1,2})?\s*(vac|vdc|v)\b/i.test(text));
+  }
+  if (/\b(conector|pinagem|pino|borne)\b/i.test(question || '')) {
+    checks.push(/\b(cn\s*\d{1,3}|j\s*\d{1,3}|p\s*\d{1,3}|conector|pinagem|borne)\b/i.test(text));
+  }
+  if (/\b(erro|falha|fault|c[oó]digo)\b/i.test(question || '')) {
+    checks.push(/\b(falha|erro|fault|code|\d{3,4})\b/i.test(text));
+  }
+  if (/\b(jump(er)?|bypass|ponte(ar)?)\b/i.test(question || '')) {
+    checks.push(/\b(jumper|bypass|ponte|pontear)\b/i.test(text));
+  }
+
+  if (checks.length === 0) return true;
+  return checks.every(Boolean);
 }
 
 function buildUnsafeUngroundedReply(sessionState, missingItems) {
@@ -883,6 +932,181 @@ function extractConnectorTokens(text) {
   );
 }
 
+function buildDocKey(doc) {
+  const source = doc?.metadata?.source || '';
+  const chunk = doc?.metadata?.chunkIndex ?? '';
+  const page = doc?.metadata?.page ?? '';
+  const prefix = String(doc?.content || '').slice(0, 120);
+  return `${source}::${chunk}::${page}::${prefix}`;
+}
+
+function normalizeForDedup(text) {
+  return normalizeText(text || '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function tokenSet(text) {
+  const normalized = normalizeForDedup(text);
+  if (!normalized) return new Set();
+  return new Set(normalized.split(' ').filter(t => t.length >= 3));
+}
+
+function jaccardSimilarity(setA, setB) {
+  if (!setA?.size || !setB?.size) return 0;
+  let intersection = 0;
+  for (const t of setA) {
+    if (setB.has(t)) intersection += 1;
+  }
+  const union = setA.size + setB.size - intersection;
+  return union <= 0 ? 0 : intersection / union;
+}
+
+function diversifyDocs(docs, maxDocs = 25, maxPerSource = 8, nearDuplicateThreshold = 0.88) {
+  if (!Array.isArray(docs) || docs.length === 0) return [];
+
+  const selected = [];
+  const sourceCounts = new Map();
+
+  for (const doc of docs) {
+    if (selected.length >= maxDocs) break;
+
+    const source = doc?.metadata?.source || 'unknown';
+    const currentBySource = sourceCounts.get(source) || 0;
+    if (currentBySource >= maxPerSource) continue;
+
+    const content = `${doc?.metadata?.title || ''} ${doc?.content || ''}`;
+    const currentTokens = tokenSet(content);
+    if (currentTokens.size === 0) continue;
+
+    let isNearDuplicate = false;
+    for (const chosen of selected) {
+      const score = jaccardSimilarity(currentTokens, chosen._tokenSet);
+      if (score >= nearDuplicateThreshold) {
+        isNearDuplicate = true;
+        break;
+      }
+    }
+    if (isNearDuplicate) continue;
+
+    sourceCounts.set(source, currentBySource + 1);
+    selected.push({ ...doc, _tokenSet: currentTokens });
+  }
+
+  return selected.map(({ _tokenSet, ...doc }) => doc);
+}
+
+async function rerankDocsWithCrossModel(question, docs, sessionState) {
+  if (!ENABLE_CROSS_RERANKER) return { docs, applied: false, reason: 'disabled' };
+  if (!Array.isArray(docs) || docs.length < 3) return { docs, applied: false, reason: 'insufficient_docs' };
+
+  const candidates = docs.slice(0, CROSS_RERANKER_CANDIDATES);
+  const payload = candidates.map((d, idx) => ({
+    id: idx + 1,
+    title: String(d?.metadata?.title || '').slice(0, 180),
+    source: String(d?.metadata?.source || '').slice(0, 120),
+    similarity: Number(d?.similarity || 0).toFixed(4),
+    excerpt: String(d?.content || '').replace(/\s+/g, ' ').slice(0, 700),
+  }));
+
+  const prompt = `Você é um reranker técnico para RAG de manutenção.
+
+Objetivo: ordenar os trechos por utilidade para responder à pergunta do técnico com precisão factual.
+
+Regra de saída: retorne APENAS JSON válido no formato:
+{"ordered":[id1,id2,...]}
+
+Critérios de ordenação (maior prioridade primeiro):
+1) evidência literal para responder a pergunta;
+2) aderência ao modelo/placa/erro informado;
+3) maior especificidade técnica (evitar genéricos);
+4) menor risco de confusão de contexto.
+
+Pergunta: ${String(question || '').slice(0, 500)}
+Contexto de sessão: marca=${sessionState?.brand || 'n/a'}, modelo=${sessionState?.model || 'n/a'}, placa=${sessionState?.board || 'n/a'}, erro=${sessionState?.error || 'n/a'}
+
+Candidatos:
+${JSON.stringify(payload)}`;
+
+  try {
+    const result = await queryRewriter.generateContent(prompt);
+    const text = String(result?.response?.text?.() || '').trim();
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return { docs, applied: false, reason: 'no_json' };
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    const orderedIds = Array.isArray(parsed?.ordered) ? parsed.ordered : [];
+    if (orderedIds.length === 0) return { docs, applied: false, reason: 'empty_order' };
+
+    const reordered = [];
+    const seen = new Set();
+    for (const rawId of orderedIds) {
+      const idx = Number(rawId) - 1;
+      if (!Number.isInteger(idx) || idx < 0 || idx >= candidates.length) continue;
+      if (seen.has(idx)) continue;
+      seen.add(idx);
+      reordered.push(candidates[idx]);
+    }
+
+    for (let i = 0; i < candidates.length; i++) {
+      if (!seen.has(i)) reordered.push(candidates[i]);
+    }
+
+    const keep = Math.max(5, CROSS_RERANKER_KEEP);
+    const head = reordered.slice(0, keep);
+    const tail = docs.slice(candidates.length);
+    return { docs: [...head, ...tail], applied: true, reason: null };
+  } catch {
+    return { docs, applied: false, reason: 'exception' };
+  }
+}
+
+function clamp01(value) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
+}
+
+function buildHybridDocs(resultMap) {
+  const rows = Array.from(resultMap.values());
+  if (!rows.length) return [];
+
+  const maxLex = rows.reduce((max, r) => Math.max(max, r.lexicalRaw || 0), 0) || 1;
+
+  return rows
+    .map(r => {
+      const semantic = clamp01(r.semantic || 0);
+      const lexical = clamp01((r.lexicalRaw || 0) / maxLex);
+      const chunkType = String(r.doc?.metadata?.chunkType || '');
+      const chunkBonus = chunkType === 'fault_code' ? 0.07 : chunkType === 'page_window' ? 0.03 : 0;
+      const hybrid = clamp01((semantic * 0.68) + (lexical * 0.32) + chunkBonus);
+
+      return {
+        ...r.doc,
+        similarity: hybrid,
+        semanticSimilarity: semantic,
+        lexicalSimilarity: lexical,
+      };
+    })
+    .sort((a, b) => b.similarity - a.similarity);
+}
+
+function hasStrongEvidence(question, docs, faultCodes, pinoutQuery) {
+  const top = docs?.[0]?.similarity || 0;
+  const hasFaultEvidence = !faultCodes?.length || docs.some(d => docMentionsAnyFaultCode(d, faultCodes));
+  const hasPinEvidence = !pinoutQuery || docs.some(d => countHits(docText(d), PINOUT_KEYWORDS) > 0);
+
+  if (faultCodes?.length) {
+    return hasFaultEvidence && top >= 0.42;
+  }
+
+  if (pinoutQuery) {
+    return hasPinEvidence && top >= 0.5;
+  }
+
+  return top >= 0.58 && docs.length >= 4;
+}
+
 /**
  * Realiza busca RAG completa: busca contexto relevante e gera resposta
  * @param {string} question - Pergunta do usuário
@@ -893,6 +1117,13 @@ function extractConnectorTokens(text) {
  */
 export async function ragQuery(question, agentSystemInstruction = '', topK = 10, brandFilter = null, conversationHistory = []) {
   const startTime = Date.now();
+  let telemetryOutcome = 'started';
+  let telemetryBlockedReason = null;
+  let telemetryDocsSelected = 0;
+  let telemetryThreshold = null;
+  let retrievalTrace = [];
+  let rerankerApplied = false;
+  let rerankerReason = null;
   
   // Similaridade mínima para considerar um documento relevante
   const MIN_SIMILARITY = 0.55; // Mais permissivo para capturar mais info relevante
@@ -942,6 +1173,14 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
     const cached = responseCache.get(cacheKey);
     if (cached && (Date.now() - cached.timestamp < RESPONSE_CACHE_TTL)) {
       console.log('📦 Resposta do cache (TTL 5min)');
+      pushRagTelemetry({
+        outcome: 'cache_hit',
+        questionPreview: String(question || '').slice(0, 200),
+        brandFilter: effectiveBrandFilter || null,
+        hasHistory,
+        latencyMs: 0,
+        topK,
+      });
       return { ...cached.response, fromCache: true, searchTime: 0 };
     }
   }
@@ -1051,37 +1290,91 @@ ${qs.map(q => `- ${q}`).join('\n')}`,
       console.log('⚠️ Reescrita de query falhou, usando query original');
     }
     
-    // ═══ BUSCA PARALELA COM TODAS AS QUERIES ═══
+    // ═══ BUSCA HÍBRIDA ITERATIVA (VETOR + BM25) ═══
     console.log(`📚 Buscando documentos...${effectiveBrandFilter ? ` (filtro: ${effectiveBrandFilter})` : ''}`);
-    
-    const allResults = new Map(); // id -> {doc, maxSimilarity}
+
+    retrievalTrace = [];
     const perQueryTopK = faultCodeQuery ? topK * 4 : topK * 3;
-    
-    for (const query of searchQueries) {
-      const queryEmb = await generateEmbedding(query);
-      const docs = await searchSimilar(queryEmb, perQueryTopK, effectiveBrandFilter); // Busca mais docs por query
-      
-      for (const doc of docs) {
-        const docId = doc.metadata?.chunkIndex + '_' + (doc.metadata?.source || '');
-        const existing = allResults.get(docId);
-        if (!existing || doc.similarity > existing.similarity) {
-          allResults.set(docId, doc);
+
+    const expandedQueries = Array.from(new Set([
+      ...searchQueries,
+      ...buildSupplementalQueries(enrichedQuery, technicalKeywords, sessionState, signals),
+      ...buildFaultCodeQueries(question, faultCodes, sessionState),
+    ].map(q => String(q || '').trim()).filter(Boolean)));
+
+    const iterativePlans = [
+      { name: 'primary_hybrid', queries: searchQueries.slice(0, 10) },
+      { name: 'expanded_hybrid', queries: expandedQueries.slice(0, 14) },
+      { name: 'focused_retry', queries: Array.from(new Set([
+        question,
+        ...faultCodes.map(c => `falha ${c}`),
+        technicalKeywords.slice(0, 8).join(' '),
+      ])).filter(Boolean).slice(0, 8) },
+    ];
+
+    let mergedDocs = [];
+
+    for (const plan of iterativePlans) {
+      const roundMap = new Map();
+      const planQueries = plan.queries.filter(q => String(q || '').trim().length > 3);
+
+      for (const query of planQueries) {
+        const queryEmb = await generateEmbedding(query);
+        const semanticDocs = await searchSimilar(queryEmb, perQueryTopK, effectiveBrandFilter);
+        const lexicalDocs = await searchLexical(query, perQueryTopK, effectiveBrandFilter);
+
+        for (const doc of semanticDocs) {
+          const key = buildDocKey(doc);
+          const existing = roundMap.get(key) || { doc, semantic: 0, lexicalRaw: 0 };
+          existing.semantic = Math.max(existing.semantic || 0, doc.similarity || 0);
+          existing.doc = existing.doc || doc;
+          roundMap.set(key, existing);
+        }
+
+        for (const doc of lexicalDocs) {
+          const key = buildDocKey(doc);
+          const existing = roundMap.get(key) || { doc, semantic: 0, lexicalRaw: 0 };
+          existing.lexicalRaw = Math.max(existing.lexicalRaw || 0, doc.similarity || 0);
+          existing.doc = existing.doc || doc;
+          roundMap.set(key, existing);
         }
       }
+
+      const roundDocs = buildHybridDocs(roundMap);
+
+      const mergedMap = new Map();
+      for (const doc of [...mergedDocs, ...roundDocs]) {
+        const key = buildDocKey(doc);
+        const existing = mergedMap.get(key);
+        if (!existing || (doc.similarity || 0) > (existing.similarity || 0)) {
+          mergedMap.set(key, doc);
+        }
+      }
+      mergedDocs = Array.from(mergedMap.values()).sort((a, b) => (b.similarity || 0) - (a.similarity || 0));
+
+      const strong = hasStrongEvidence(question, mergedDocs.slice(0, Math.max(topK * 2, 15)), faultCodes, pinoutQuery);
+      retrievalTrace.push({
+        round: plan.name,
+        queriesTried: planQueries.length,
+        docsAfterRound: mergedDocs.length,
+        topSimilarity: mergedDocs[0]?.similarity || 0,
+        strongEvidence: strong,
+      });
+
+      if (strong) break;
     }
-    
-    // Converte para array e ordena por similaridade
-    let mergedDocs = Array.from(allResults.values())
-      .sort((a, b) => b.similarity - a.similarity);
 
     mergedDocs = rerankDocsByLexicalCoverage(mergedDocs, technicalKeywords);
 
     if (faultCodeQuery && faultCodes.length) {
       mergedDocs = rerankDocsForFaultCodes(mergedDocs, faultCodes);
     }
+
+    mergedDocs = diversifyDocs(mergedDocs, Math.max(topK * 6, 40), 12, 0.9);
     
     // ═══ FILTRA POR SIMILARIDADE MÍNIMA ═══
-    const dynamicMinSimilarity = faultCodeQuery ? 0.40 : MIN_SIMILARITY;
+    const dynamicMinSimilarity = faultCodeQuery ? 0.40 : 0.48;
+    telemetryThreshold = dynamicMinSimilarity;
     let relevantDocs = mergedDocs.filter(doc => doc.similarity >= dynamicMinSimilarity);
 
     if (faultCodeQuery && faultCodes.length) {
@@ -1101,8 +1394,19 @@ ${qs.map(q => `- ${q}`).join('\n')}`,
 
     // ═══ DESAMBIGUAÇÃO (SÉRIE/SEGURANÇA vs. CAN/BUS) ═══
     relevantDocs = rerankAndFilterDocs(relevantDocs, intent, pinoutQuery);
+
+    const reranked = await rerankDocsWithCrossModel(question, relevantDocs, sessionState);
+    relevantDocs = reranked.docs;
+    rerankerApplied = reranked.applied;
+    rerankerReason = reranked.reason;
+
+    relevantDocs = diversifyDocs(relevantDocs, Math.max(topK * 4, 24), 10, 0.88);
     
     console.log(`📊 ${mergedDocs.length} docs únicos encontrados, ${relevantDocs.length} acima do threshold (${dynamicMinSimilarity * 100}%)`);
+    if (retrievalTrace.length) {
+      const compactTrace = retrievalTrace.map(t => `${t.round}:${t.docsAfterRound}:${Math.round((t.topSimilarity || 0) * 100)}%:${t.strongEvidence ? 'ok' : 'weak'}`).join(' | ');
+      console.log(`🧭 Iterative trace: ${compactTrace}`);
+    }
     const topSim = relevantDocs.length > 0 ? relevantDocs[0].similarity : 0;
     if (relevantDocs.length > 0) {
       console.log(`   Top sim: ${Math.round(topSim * 100)}%, Bottom sim: ${Math.round(relevantDocs[relevantDocs.length - 1].similarity * 100)}%`);
@@ -1113,6 +1417,8 @@ ${qs.map(q => `- ${q}`).join('\n')}`,
       // Para perguntas de diagnóstico/procedimento, ainda dá para orientar com segurança
       // mesmo sem evidência do RAG (sem inventar pinagem/conectores).
       if (isBusVsSafetyDisambiguationQuery(question)) {
+        telemetryOutcome = 'abstained';
+        telemetryBlockedReason = 'no_relevant_docs_bus_vs_safety';
         return {
           answer: `${buildBusVsSafetyAnswer()}\n\nObs.: não encontrei trechos específicos no banco de conhecimento para “cravar” conectores/pinos neste momento.`,
           sources: [],
@@ -1121,6 +1427,8 @@ ${qs.map(q => `- ${q}`).join('\n')}`,
       }
 
       if (isIntermittentSafetyChainQuery(question)) {
+        telemetryOutcome = 'abstained';
+        telemetryBlockedReason = 'no_relevant_docs_intermittent_safety';
         return {
           answer: `${buildIntermittentSafetyChainAnswer(question)}\n\nObs.: não encontrei trechos específicos no banco de conhecimento para “cravar” conectores/pinos neste momento.`,
           sources: [],
@@ -1129,6 +1437,8 @@ ${qs.map(q => `- ${q}`).join('\n')}`,
       }
 
       if (isDiagnosticWorkflowQuery(question)) {
+        telemetryOutcome = 'abstained';
+        telemetryBlockedReason = 'no_relevant_docs_diagnostic_workflow';
         return {
           answer: `${buildDiagnosticWorkflowAnswer(question)}\n\nObs.: não encontrei trechos específicos dessa placa no banco de conhecimento para “cravar” pinos/conectores. Se você precisar de pinagem, me passe a página do diagrama/tabela no PDF.`,
           sources: [],
@@ -1148,6 +1458,9 @@ ${qs.map(q => `- ${q}`).join('\n')}`,
         ? `Não encontrei trechos relevantes dentro do filtro de marca selecionado.`
         : `Não encontrei trechos relevantes na base para essa pergunta.`;
 
+      telemetryOutcome = 'abstained';
+      telemetryBlockedReason = 'no_relevant_docs_need_clarification';
+
       return {
         answer: `${brandMsg}\n\nPra eu achar certinho no seu banco de conhecimento, me responde rapidinho:\n${qBlock}\n\n${sourcesText}`,
         sources: [],
@@ -1162,6 +1475,8 @@ ${qs.map(q => `- ${q}`).join('\n')}`,
         // Se o técnico está pedindo “procedimento de isolamento” (sensor vs cabo vs lógica),
         // não bloqueia com perguntas de pinagem. Responde o fluxo seguro e só pede detalhes se ele quiser pinagem.
         if (isBusVsSafetyDisambiguationQuery(question)) {
+          telemetryOutcome = 'abstained';
+          telemetryBlockedReason = 'safety_without_evidence_bus_vs_safety';
           return {
             answer: `${buildBusVsSafetyAnswer()}\n\nObs.: quando você pedir conector/pino/tabela, preciso do PDF/página exata para não chutar.`,
             sources: [],
@@ -1170,6 +1485,8 @@ ${qs.map(q => `- ${q}`).join('\n')}`,
         }
 
         if (isIntermittentSafetyChainQuery(question)) {
+          telemetryOutcome = 'abstained';
+          telemetryBlockedReason = 'safety_without_evidence_intermittent';
           return {
             answer: `${buildIntermittentSafetyChainAnswer(question)}\n\nObs.: quando você pedir conector/pino/tabela, preciso do PDF/página exata para não chutar.`,
             sources: [],
@@ -1178,6 +1495,8 @@ ${qs.map(q => `- ${q}`).join('\n')}`,
         }
 
         if (isDiagnosticWorkflowQuery(question)) {
+          telemetryOutcome = 'abstained';
+          telemetryBlockedReason = 'safety_without_evidence_diagnostic';
           return {
             answer: `${buildDiagnosticWorkflowAnswer(question)}\n\nObs.: quando você pedir conector/pino/tabela, aí sim preciso do PDF/página exata pra não chutar.`,
             sources: [],
@@ -1190,6 +1509,10 @@ ${qs.map(q => `- ${q}`).join('\n')}`,
           'Você está medindo a série na placa principal ou no operador de porta?',
           'Tem algum código/mensagem no terminal? Se sim, qual?',
         ].slice(0, 3);
+
+        telemetryOutcome = 'abstained';
+        telemetryBlockedReason = 'safety_without_evidence';
+
         return {
           answer: `Entendi. Pela base que eu puxei aqui, não apareceu nenhum trecho claro de "série/segurança" — e isso é perigoso confundir com comunicação de porta (BUS/CAN).
 
@@ -1205,6 +1528,8 @@ ${questions.map(q => `- ${q}`).join('\n')}`,
     if (pinoutQuery) {
       const hasPinoutEvidence = relevantDocs.some(d => countHits(docText(d), PINOUT_KEYWORDS) > 0);
       if (!hasPinoutEvidence) {
+        telemetryOutcome = 'abstained';
+        telemetryBlockedReason = 'pinout_without_evidence';
         const connectorHint = sessionState?.connector ? ` (${sessionState.connector})` : '';
         return {
           answer: `Entendi — você quer pinagem física${connectorHint}. Eu só consigo te dar "pino X do conector" se isso estiver explícito no diagrama/tabela do banco de conhecimento.
@@ -1225,6 +1550,8 @@ Para eu confirmar os pinos sem chute, me envie uma destas coisas:
     if (isStatusIndicatorQuery(question)) {
       const hasIndicatorEvidence = docsHaveBlinkLegendEvidence(relevantDocs, question);
       if (!hasIndicatorEvidence) {
+        telemetryOutcome = 'abstained';
+        telemetryBlockedReason = 'indicator_without_legend';
         return {
           answer: buildStatusIndicatorClarification(sessionState),
           sources: [],
@@ -1236,17 +1563,34 @@ Para eu confirmar os pinos sem chute, me envie uma destas coisas:
     // ═══ SELECIONA OS MELHORES DOCUMENTOS (diversidade de fontes) ═══
     // Garante que documentos de diferentes fontes apareçam (não só do mesmo PDF)
     const MAX_CONTEXT_DOCS = 15; // Mais contexto = respostas mais completas
-    const selectedDocs = [];
-    const sourceCounts = {};
-    const MAX_PER_SOURCE = 8; // Máximo de chunks de um mesmo PDF
-    
-    for (const doc of relevantDocs) {
-      if (selectedDocs.length >= MAX_CONTEXT_DOCS) break;
-      const source = doc.metadata?.source || 'unknown';
-      sourceCounts[source] = (sourceCounts[source] || 0) + 1;
-      if (sourceCounts[source] <= MAX_PER_SOURCE) {
-        selectedDocs.push(doc);
-      }
+    const selectedDocs = diversifyDocs(relevantDocs, MAX_CONTEXT_DOCS, 8, 0.9);
+    telemetryDocsSelected = selectedDocs.length;
+
+    if (isCriticalLiteralQuestion(question) && !hasLiteralCriticalEvidence(question, selectedDocs)) {
+      telemetryOutcome = 'abstained';
+      telemetryBlockedReason = 'literal_evidence_missing';
+      return {
+        answer: `Para manter segurança e precisão, eu não posso cravar esse detalhe sem evidência literal no contexto recuperado.
+
+Me envie um destes itens para eu responder com exatidão:
+- página exata do manual/diagrama onde aparece o ponto (conector/pino/tensão/código)
+- foto/recorte da tabela/legenda correspondente
+- ou o trecho textual literal do documento`,
+        sources: selectedDocs.slice(0, 5).map(doc => ({
+          source: doc.metadata?.source || 'Desconhecido',
+          title: doc.metadata?.title || '',
+          excerpt: doc.content.substring(0, 180) + '...',
+          similarity: Math.round((doc.similarity || 0) * 100)
+        })),
+        searchTime: Date.now() - startTime,
+        documentsFound: selectedDocs.length,
+        telemetry: {
+          strategy: 'hybrid_bm25_vector_iterative',
+          rounds: typeof retrievalTrace !== 'undefined' ? retrievalTrace : [],
+          blockedByLiteralEvidence: true,
+          rerankerApplied,
+        }
+      };
     }
 
     // Se a pergunta exige orientação elétrica/jumper e ainda não temos sinais mínimos (modelo/placa),
@@ -1260,6 +1604,8 @@ Para eu confirmar os pinos sem chute, me envie uma destas coisas:
     const hasConnectorEvidence = docsHaveConnectorTokens || questionConnectorTokens.length > 0;
 
     if (needsHardwareSpecific && !hasBoard && !pinoutHasEvidence) {
+      telemetryOutcome = 'abstained';
+      telemetryBlockedReason = 'hardware_specific_missing_board';
       const singleQuestion = hasHistory
         ? 'Qual a placa exata (nome escrito na placa/diagnóstico) para eu te passar o ponto sem risco?'
         : 'Qual o modelo + nome da placa para eu te passar o ponto sem risco?';
@@ -1569,8 +1915,18 @@ ${context}
         similarity: Math.round(doc.similarity * 100)
       })),
       searchTime: endTime - startTime,
-      documentsFound: selectedDocs.length
+      documentsFound: selectedDocs.length,
+      telemetry: {
+        strategy: 'hybrid_bm25_vector_iterative',
+        rounds: typeof retrievalTrace !== 'undefined' ? retrievalTrace : [],
+        threshold: dynamicMinSimilarity,
+        rerankerApplied,
+        rerankerReason,
+      }
     };
+
+    telemetryOutcome = 'answered';
+    telemetryDocsSelected = selectedDocs.length;
 
     // Salva no cache (somente se não tem histórico)
     if (!hasHistory) {
@@ -1584,8 +1940,25 @@ ${context}
     return response;
     
   } catch (error) {
+    telemetryOutcome = 'error';
+    telemetryBlockedReason = error?.message || 'unknown_error';
     console.error('Erro no RAG:', error);
     throw error;
+  } finally {
+    pushRagTelemetry({
+      outcome: telemetryOutcome,
+      blockedReason: telemetryBlockedReason,
+      questionPreview: String(question || '').slice(0, 200),
+      brandFilter: effectiveBrandFilter || null,
+      hasHistory: Boolean(hasHistory),
+      topK,
+      selectedDocs: telemetryDocsSelected,
+      threshold: telemetryThreshold,
+      rerankerApplied,
+      rerankerReason,
+      rounds: Array.isArray(retrievalTrace) ? retrievalTrace.slice(0, 6) : [],
+      latencyMs: Date.now() - startTime,
+    });
   }
 }
 
@@ -1609,5 +1982,7 @@ export async function hasKnowledgeAbout(topic) {
 export default {
   ragQuery,
   searchOnly,
-  hasKnowledgeAbout
+  hasKnowledgeAbout,
+  getRecentRagTelemetry,
+  clearRagTelemetry,
 };

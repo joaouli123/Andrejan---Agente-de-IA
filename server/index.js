@@ -11,7 +11,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 
-import { ragQuery, searchOnly } from './services/ragService.js';
+import { ragQuery, searchOnly, getRecentRagTelemetry, clearRagTelemetry } from './services/ragService.js';
 import { initializeChroma, getStats, clearCollection, addDocuments, hasSource, getIndexedSources, isLoading, getLoadingProgress, compactStore, removeSources } from './services/vectorStoreAdapter.js';
 import { extractTextFromPDF, extractTextWithOCR, splitTextIntoChunks, terminateOCR } from './services/pdfExtractor.js';
 import { generateEmbeddings } from './services/embeddingService.js';
@@ -155,6 +155,31 @@ app.get('/api/stats', authMiddleware, async (req, res) => {
   try {
     const stats = await getStats();
     res.json(stats);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Telemetria recente do RAG (admin)
+ */
+app.get('/api/telemetry/rag', adminMiddleware, (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '100', 10)));
+    const entries = getRecentRagTelemetry(limit);
+    res.json({ count: entries.length, entries });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Limpa telemetria em memória do RAG (admin)
+ */
+app.delete('/api/telemetry/rag', adminMiddleware, (req, res) => {
+  try {
+    clearRagTelemetry();
+    res.json({ success: true, message: 'Telemetria RAG limpa' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
