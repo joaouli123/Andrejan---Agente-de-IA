@@ -18,7 +18,7 @@ dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
 import { extractTextWithOCR, splitTextIntoChunks } from '../services/pdfExtractor.js';
 import { generateEmbedding } from '../services/embeddingService.js';
-import { initializeChroma, addDocuments } from '../services/vectorStore.js';
+import { initializeChroma, addDocuments } from '../services/vectorStoreAdapter.js';
 
 const PDF_DIR = path.join(__dirname, '..', 'data', 'pdfs');
 const VECTORS_FILE = path.join(__dirname, '..', 'data', 'vectors.json');

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { processDirectory } from '../services/pdfExtractor.js';
 import { generateEmbeddings } from '../services/embeddingService.js';
-import { initializeChroma, addDocuments, getStats, clearCollection } from '../services/vectorStore.js';
+import { initializeChroma, addDocuments, getStats, clearCollection } from '../services/vectorStoreAdapter.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

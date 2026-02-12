@@ -9,7 +9,7 @@ import fs from 'fs';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 
-import { initializeChroma, removeSources, addDocuments, compactStore } from '../services/vectorStore.js';
+import { initializeChroma, removeSources, addDocuments, compactStore } from '../services/vectorStoreAdapter.js';
 import { extractTextWithOCR, splitTextIntoChunks } from '../services/pdfExtractor.js';
 import { generateEmbeddings } from '../services/embeddingService.js';
 

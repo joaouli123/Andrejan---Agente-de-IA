@@ -5,7 +5,7 @@
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { generateEmbedding } from './embeddingService.js';
-import { searchSimilar, getIndexedSources } from './vectorStore.js';
+import { searchSimilar, getIndexedSources } from './vectorStoreAdapter.js';
 import dotenv from 'dotenv';
 
 dotenv.config();

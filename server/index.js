@@ -12,7 +12,7 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 
 import { ragQuery, searchOnly } from './services/ragService.js';
-import { initializeChroma, getStats, clearCollection, addDocuments, hasSource, getIndexedSources, isLoading, getLoadingProgress, compactStore, removeSources } from './services/vectorStore.js';
+import { initializeChroma, getStats, clearCollection, addDocuments, hasSource, getIndexedSources, isLoading, getLoadingProgress, compactStore, removeSources } from './services/vectorStoreAdapter.js';
 import { extractTextFromPDF, extractTextWithOCR, splitTextIntoChunks, terminateOCR } from './services/pdfExtractor.js';
 import { generateEmbeddings } from './services/embeddingService.js';
 import rateLimit from 'express-rate-limit';
