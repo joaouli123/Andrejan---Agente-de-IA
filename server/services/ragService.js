@@ -37,7 +37,7 @@ const responseCache = new Map();
 const RESPONSE_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 const RESPONSE_CACHE_MAX = 50;
 // Bump this when changing prompts/guardrails to avoid serving stale cached answers
-const RESPONSE_CACHE_VERSION = '2026-02-12-2';
+const RESPONSE_CACHE_VERSION = '2026-02-12-3';
 
 /**
  * Corrige encoding corrompido (UTF-8 decodificado como Latin-1)
@@ -256,6 +256,75 @@ function isDiagnosticWorkflowQuery(question) {
   if (isPinoutQuery(question)) return false;
 
   return true;
+}
+
+function isIntermittentSafetyChainQuery(question) {
+  const q = normalizeText(question);
+  if (!q) return false;
+  const hasIntermittent = q.includes('intermit') || q.includes('as vezes') || q.includes('vibra') || q.includes('balanca') || q.includes('mau contato');
+  const hasSafety = SAFETY_CHAIN_KEYWORDS.some(k => q.includes(normalizeText(k))) || q.includes('eme') || q.includes('emerg');
+  if (!hasIntermittent || !hasSafety) return false;
+  if (isPinoutQuery(question)) return false;
+  return true;
+}
+
+function buildIntermittentSafetyChainAnswer(question) {
+  const mentionsNoise = /ru[ií]do|ripple|oscila|flutua/i.test(question || '');
+  return `Para “série/cadeia de segurança” abrindo intermitente, a estratégia é provar se a abertura é real (contato/cabo) ou se é instabilidade elétrica (queda de tensão/ruído) que o circuito interpreta como abertura.
+
+1) Prove o comportamento (sem trocar placa)
+- Faça teste de vibração: com o elevador parado e seguro, mexa/pressione conectores e chicotes por trechos; observe se o sintoma aparece. Se aparece ao tocar um ponto, é forte indicativo de mau contato/cabo.
+- Faça inspeção visual focada: oxidação, folga, emenda, cabo esmagado, dobra perto de dobradiça/correia, terminal mal crimpado.
+
+2) Teste queda de tensão sob carga (mais útil que continuidade)
+- Medir continuidade “parado” pode passar e falhar sob carga/vibração.
+- Meça a tensão do circuito de segurança no ponto de entrada (referência/COM do circuito) e veja se há quedas rápidas quando o sintoma ocorre.
+- Se o multímetro tiver MIN/MAX, ative e provoque a falha; isso captura quedas curtas.
+
+3) Separe “cabo/sensor” de “entrada/lógica”
+- Se você consegue reproduzir a falha mexendo no chicote/sensor e a tensão/estado cai antes de chegar na placa, é cabeamento/sensor.
+- Se no ponto de entrada o sinal parece estável, mas o diagnóstico acusa abertura, suspeite de referência/COM do circuito, entrada sensível, ou falha intermitente interna.
+
+4) Ruído/instabilidade (quando não há mau contato óbvio)
+${mentionsNoise ? '- Se há ruído/ripple, verifique aterramento, retorno comum e fontes (24V) com carga; variações rápidas podem simular abertura.' : '- Verifique aterramento/retorno comum e fonte de 24V sob carga; variações rápidas podem simular abertura.'}
+
+Se você me disser onde a série é lida (placa principal vs módulo/operador) e qual evento exato no diagnóstico aparece quando “abre”, eu adapto o passo a passo para o seu cenário sem precisar de pinagem.`;
+}
+
+function isBusVsSafetyDisambiguationQuery(question) {
+  const q = normalizeText(question);
+  if (!q) return false;
+
+  const hasBus = DOOR_BUS_KEYWORDS.some(k => q.includes(normalizeText(k)));
+  const hasSafety = SAFETY_CHAIN_KEYWORDS.some(k => q.includes(normalizeText(k))) || q.includes('eme') || q.includes('emerg');
+  // Perguntas do tipo: "CAN H/L tem a ver com série?" ou "quando é BUS e quando é contato em série?"
+  return hasBus && (hasSafety || q.includes('serie') || q.includes('segur'));
+}
+
+function buildBusVsSafetyAnswer() {
+  return `BUS/CAN (C_L/C_H) e “série/cadeia de segurança” são coisas diferentes:
+
+- BUS/CAN: comunicação de dados entre módulos (ex.: operador de porta). Mesmo com tensões presentes no barramento, isso não confirma cadeia de segurança.
+- Série/cadeia de segurança: circuito de permissivas (contatos em série). O que importa é o estado (aberto/fechado) e se a controladora reconhece “segurança OK”.
+
+Como diferenciar na prática:
+- Se o sintoma é “sem comunicação”, mensagens de link/barramento e comportamento intermitente de dados, é BUS.
+- Se o sintoma é “segurança aberta”, EME, intertravamento/porta, ou bloqueio total de movimento por permissiva, é cadeia de segurança.
+
+Se você informar onde está medindo (placa principal vs operador/módulo) e qual mensagem/estado aparece no diagnóstico, eu digo exatamente qual lado atacar primeiro (BUS ou série), sem precisar de pinagem.`;
+}
+
+function stripConnectorLikeTokens(text) {
+  if (!text) return text;
+  // Remove menções de conectores/pinos típicos quando não há evidência (C1, J5, CN1, P35 etc.)
+  return String(text)
+    .replace(/\bCN\s*\d{1,3}\b/gi, '')
+    .replace(/\bJ\s*\d{1,3}\b/gi, '')
+    .replace(/\bP\s*\d{1,3}\b/gi, '')
+    .replace(/\bC\s*\d{1,3}\b/gi, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function buildDiagnosticWorkflowAnswer(question) {
@@ -600,6 +669,22 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
     if (relevantDocs.length === 0) {
       // Para perguntas de diagnóstico/procedimento, ainda dá para orientar com segurança
       // mesmo sem evidência do RAG (sem inventar pinagem/conectores).
+      if (isBusVsSafetyDisambiguationQuery(question)) {
+        return {
+          answer: `${buildBusVsSafetyAnswer()}\n\nObs.: não encontrei trechos específicos no banco de conhecimento para “cravar” conectores/pinos neste momento.`,
+          sources: [],
+          searchTime: Date.now() - startTime
+        };
+      }
+
+      if (isIntermittentSafetyChainQuery(question)) {
+        return {
+          answer: `${buildIntermittentSafetyChainAnswer(question)}\n\nObs.: não encontrei trechos específicos no banco de conhecimento para “cravar” conectores/pinos neste momento.`,
+          sources: [],
+          searchTime: Date.now() - startTime
+        };
+      }
+
       if (isDiagnosticWorkflowQuery(question)) {
         return {
           answer: `${buildDiagnosticWorkflowAnswer(question)}\n\nObs.: não encontrei trechos específicos dessa placa no banco de conhecimento para “cravar” pinos/conectores. Se você precisar de pinagem, me passe a página do diagrama/tabela no PDF.`,
@@ -633,6 +718,22 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
       if (!hasSafetyEvidence) {
         // Se o técnico está pedindo “procedimento de isolamento” (sensor vs cabo vs lógica),
         // não bloqueia com perguntas de pinagem. Responde o fluxo seguro e só pede detalhes se ele quiser pinagem.
+        if (isBusVsSafetyDisambiguationQuery(question)) {
+          return {
+            answer: `${buildBusVsSafetyAnswer()}\n\nObs.: quando você pedir conector/pino/tabela, preciso do PDF/página exata para não chutar.`,
+            sources: [],
+            searchTime: Date.now() - startTime,
+          };
+        }
+
+        if (isIntermittentSafetyChainQuery(question)) {
+          return {
+            answer: `${buildIntermittentSafetyChainAnswer(question)}\n\nObs.: quando você pedir conector/pino/tabela, preciso do PDF/página exata para não chutar.`,
+            sources: [],
+            searchTime: Date.now() - startTime,
+          };
+        }
+
         if (isDiagnosticWorkflowQuery(question)) {
           return {
             answer: `${buildDiagnosticWorkflowAnswer(question)}\n\nObs.: quando você pedir conector/pino/tabela, aí sim preciso do PDF/página exata pra não chutar.`,
@@ -701,6 +802,7 @@ Para eu confirmar os pinos sem chute, me envie uma destas coisas:
     const questionConnectorTokens = extractConnectorTokens(question);
     const docsHaveConnectorTokens = relevantDocs.some(d => extractConnectorTokens(`${d?.metadata?.title || ''} ${d?.content || ''}`).length > 0);
     const pinoutHasEvidence = pinoutQuery && (docsHaveConnectorTokens || questionConnectorTokens.length > 0);
+    const hasConnectorEvidence = docsHaveConnectorTokens || questionConnectorTokens.length > 0;
 
     if (needsHardwareSpecific && !hasBoard && !pinoutHasEvidence) {
       const singleQuestion = hasHistory
@@ -938,6 +1040,11 @@ ${context}
       .replace(/[ \t]{2,}/g, ' ')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
+
+    // Se a resposta veio com conectores/pinos mas não existe evidência no contexto/pergunta, remove.
+    if (!hasConnectorEvidence) {
+      answer = stripConnectorLikeTokens(answer);
+    }
 
     // Linha de defesa contra confusão Série/Segurança vs. BUS/CAN
     if (intent === INTENT.safetyChain) {
