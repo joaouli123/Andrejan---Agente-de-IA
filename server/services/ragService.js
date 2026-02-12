@@ -37,6 +37,43 @@ const responseCache = new Map();
 const RESPONSE_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 const RESPONSE_CACHE_MAX = 50;
 
+/**
+ * Corrige encoding corrompido (UTF-8 decodificado como Latin-1)
+ * Ex: "TÃCNICO" → "TÉCNICO", "RÃPIDA" → "RÁPIDA", "versÃ£o" → "versão"
+ */
+function fixEncoding(str) {
+  if (!str) return str;
+  try {
+    // Tenta decodificar dupla codificação UTF-8/Latin-1
+    const bytes = new Uint8Array([...str].map(c => c.charCodeAt(0)));
+    const decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    // Se decodificou com sucesso e é diferente do original, usa o decodificado
+    if (decoded !== str && decoded.length < str.length) return decoded;
+  } catch (e) {
+    // Não é dupla codificação, tenta mapeamento manual dos padrões mais comuns
+  }
+  
+  // Fallback: substituição manual dos padrões mais comuns de corrupção
+  const replacements = {
+    'Ã©': 'é', 'Ã¡': 'á', 'Ã£': 'ã', 'Ã§': 'ç', 'Ãµ': 'õ',
+    'Ã³': 'ó', 'Ãº': 'ú', 'Ã­': 'í', 'Ã¢': 'â', 'Ãª': 'ê',
+    'Ã´': 'ô', 'Ã¼': 'ü', 'Ã': 'À',
+    'Ã\u0089': 'É', 'Ã\u0081': 'Á', 'Ã\u0083': 'Ã', 'Ã\u0087': 'Ç', 
+    'Ã\u0095': 'Õ', 'Ã\u0093': 'Ó', 'Ã\u009A': 'Ú', 'Ã\u008D': 'Í',
+    'Ã\u0082': 'Â', 'Ã\u008A': 'Ê', 'Ã\u0094': 'Ô',
+    // Padrões com Ã seguido de caractere especial
+    'Ã‰': 'É', 'Ã\u0080': 'À', 'Ãƒ': 'Ã', 'Ã‡': 'Ç',
+    'Ã•': 'Õ', 'Ã"': 'Ó', 'Ãš': 'Ú', 'Ã"': 'Ô',
+    'ÃŠ': 'Ê', 'Ã‚': 'Â', 'Ãœ': 'Ü',
+  };
+  
+  let result = str;
+  for (const [from, to] of Object.entries(replacements)) {
+    result = result.replaceAll(from, to);
+  }
+  return result;
+}
+
 function getResponseCacheKey(question, brandFilter) {
   return `${(question || '').trim().toLowerCase().substring(0, 200)}|${brandFilter || ''}`;
 }
@@ -167,12 +204,12 @@ Reformulações:`;
     const sourcesFound = [...new Set(selectedDocs.map(d => d.metadata?.source || 'Desconhecido'))];
     const sourcesList = sourcesFound.map(s => {
       const clean = s.replace(/^\d+-\d+-/, '').replace(/\.pdf$/i, '');
-      return clean;
+      return fixEncoding(clean);
     }).join(', ');
     
     // 5. Monta o contexto - inclui a fonte de cada trecho
     const context = selectedDocs.map((doc, i) => {
-      const sourceName = (doc.metadata?.source || 'Desconhecido').replace(/^\d+-\d+-/, '').replace(/\.pdf$/i, '');
+      const sourceName = fixEncoding((doc.metadata?.source || 'Desconhecido').replace(/^\d+-\d+-/, '').replace(/\.pdf$/i, ''));
       return `[FONTE: ${sourceName}]\n${doc.content}`;
     }).join('\n\n---\n\n');
     
