@@ -121,6 +121,94 @@ const BOARD_TOKENS = [
   'GCIOB', 'MCP100', 'PLA6001', 'URM', 'CAVF', 'GDCB',
 ];
 
+const INTENT = {
+  safetyChain: 'safety_chain',
+  general: 'general',
+};
+
+const SAFETY_CHAIN_KEYWORDS = [
+  'série',
+  'segurança',
+  'segurancas',
+  'cadeia',
+  'cadeia de segur',
+  'safety',
+  'trinco',
+  'preliminar',
+  'contato',
+  'contatos',
+  'circuito de segur',
+  'serie de porta',
+  'serie de portas',
+  'serie de segur',
+  'serie de seguranca',
+  'serie de segurancas',
+];
+
+const DOOR_BUS_KEYWORDS = [
+  'can',
+  'bus',
+  'c_l',
+  'c_h',
+  'can high',
+  'can low',
+  'comunica',
+  'link',
+  'protocolo',
+  'barramento',
+];
+
+function normalizeText(s) {
+  return (s || '')
+    .toString()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function classifyIntent(question) {
+  const q = normalizeText(question);
+  if (SAFETY_CHAIN_KEYWORDS.some(k => q.includes(k))) return INTENT.safetyChain;
+  return INTENT.general;
+}
+
+function docText(doc) {
+  const title = doc?.metadata?.title || '';
+  const content = doc?.content || '';
+  return normalizeText(`${title} ${content}`);
+}
+
+function countHits(text, keywords) {
+  let hits = 0;
+  for (const kw of keywords) {
+    if (text.includes(kw)) hits += 1;
+  }
+  return hits;
+}
+
+function rerankAndFilterDocs(docs, intent) {
+  if (!docs || docs.length === 0) return docs;
+  if (intent !== INTENT.safetyChain) return docs;
+
+  // Para perguntas de série/segurança: prioriza termos de segurança e evita docs de comunicação/CAN.
+  const scored = docs.map(d => {
+    const t = docText(d);
+    const safetyHits = countHits(t, SAFETY_CHAIN_KEYWORDS);
+    const busHits = countHits(t, DOOR_BUS_KEYWORDS);
+    const penalty = busHits >= 2 ? 2 : busHits; // penaliza forte CAN/C_L/C_H
+    const score = (d.similarity || 0) + safetyHits * 0.06 - penalty * 0.08;
+    return { doc: d, score, safetyHits, busHits };
+  });
+
+  // Filtra fora docs que parecem puramente CAN/bus (muitos termos de BUS e zero termos de segurança)
+  const filtered = scored
+    .filter(s => !(s.busHits >= 2 && s.safetyHits === 0))
+    .sort((a, b) => b.score - a.score)
+    .map(s => s.doc);
+
+  return filtered.length ? filtered : docs;
+}
+
 function extractSearchSignals(question, conversationHistory) {
   const texts = [
     question,
@@ -198,6 +286,8 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
   }
   
   try {
+    const intent = classifyIntent(question);
+
     // ═══ MULTI-QUERY RETRIEVAL ═══
     // Em vez de buscar com uma query só, gera variações para encontrar mais documentos relevantes
     console.log('🔍 Gerando queries de busca...');
@@ -214,7 +304,10 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
         .join(' ');
       enrichedQuery = `${recentContext} ${question}`;
     }
-    const signalSuffix = [...(signals.boardTokens || []), ...(signals.errorTokens || [])].join(' ');
+    const intentSuffix = intent === INTENT.safetyChain
+      ? 'serie de seguranca serie de portas circuito de seguranca cadeia de seguranca' // ajuda recall sem inventar entidade
+      : '';
+    const signalSuffix = [...(signals.boardTokens || []), ...(signals.errorTokens || []), intentSuffix].filter(Boolean).join(' ');
     if (signalSuffix) enrichedQuery = `${enrichedQuery} ${signalSuffix}`;
     enrichedQuery = enrichedQuery.substring(0, 700);
     
@@ -269,11 +362,14 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
     }
     
     // Converte para array e ordena por similaridade
-    const mergedDocs = Array.from(allResults.values())
+    let mergedDocs = Array.from(allResults.values())
       .sort((a, b) => b.similarity - a.similarity);
     
     // ═══ FILTRA POR SIMILARIDADE MÍNIMA ═══
-    const relevantDocs = mergedDocs.filter(doc => doc.similarity >= MIN_SIMILARITY);
+    let relevantDocs = mergedDocs.filter(doc => doc.similarity >= MIN_SIMILARITY);
+
+    // ═══ DESAMBIGUAÇÃO (SÉRIE/SEGURANÇA vs. CAN/BUS) ═══
+    relevantDocs = rerankAndFilterDocs(relevantDocs, intent);
     
     console.log(`📊 ${mergedDocs.length} docs únicos encontrados, ${relevantDocs.length} acima do threshold (${MIN_SIMILARITY * 100}%)`);
     const topSim = relevantDocs.length > 0 ? relevantDocs[0].similarity : 0;
@@ -299,6 +395,26 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
       };
     }
     
+    // Se a intenção é série/segurança, exige pelo menos algum indício de termos de segurança no contexto.
+    if (intent === INTENT.safetyChain) {
+      const hasSafetyEvidence = relevantDocs.some(d => countHits(docText(d), SAFETY_CHAIN_KEYWORDS) > 0);
+      if (!hasSafetyEvidence) {
+        const questions = [
+          'Qual é o nome exato da placa/módulo onde entra a série (como está escrito na placa/diagrama)?',
+          'Você está medindo a série na placa principal ou no operador de porta?',
+          'Tem algum código/mensagem no terminal? Se sim, qual?',
+        ].slice(0, 3);
+        return {
+          answer: `Entendi. Pela base que eu puxei aqui, não apareceu nenhum trecho claro de "série/segurança" — e isso é perigoso confundir com comunicação de porta (BUS/CAN).
+
+Pra eu te passar conector e pinos certos (sem chute), me confirma rapidinho:
+${questions.map(q => `- ${q}`).join('\n')}`,
+          sources: [],
+          searchTime: Date.now() - startTime,
+        };
+      }
+    }
+
     // ═══ SELECIONA OS MELHORES DOCUMENTOS (diversidade de fontes) ═══
     // Garante que documentos de diferentes fontes apareçam (não só do mesmo PDF)
     const MAX_CONTEXT_DOCS = 15; // Mais contexto = respostas mais completas
@@ -425,6 +541,11 @@ REGRA DE TERMINOLOGIA — USE OS MESMOS TERMOS DOS MANUAIS:
 ═══════════════════════════════════════════
 🛡️ SEGURANÇA PRIMEIRO
 ═══════════════════════════════════════════
+REGRA DE DESAMBIGUAÇÃO (GRAVE):
+- "Série de portas/seguranças" é circuito de segurança.
+- "C_L/C_H/BUS/CAN" é comunicação/dados do operador/módulo.
+- NUNCA confunda as duas coisas. Se a pergunta for sobre SÉRIE/SEGURANÇA, não responda com C_L/C_H/BUS/CAN.
+
 Antes de orientar sobre jumper, bypass, medição elétrica, reset de placas/inversores:
 - Verifique NO HISTÓRICO se o técnico JÁ informou modelo e placa.
 - Se JÁ informou → use essa info e responda diretamente. NÃO pergunte de novo.
@@ -537,6 +658,19 @@ ${context}
       .replace(/[ \t]{2,}/g, ' ')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
+
+    // Linha de defesa contra confusão Série/Segurança vs. BUS/CAN
+    if (intent === INTENT.safetyChain) {
+      const hasBusTokens = /\b(c_l|c_h|can|bus|barramento)\b/i.test(answer);
+      if (hasBusTokens) {
+        answer = `Isso aí parece medição de comunicação/dados (BUS/CAN), não de série de portas/seguranças.
+
+Pra eu te passar o conector e os pinos certos da SÉRIE (sem risco de te mandar medir ponto errado), me diz só:
+- Qual é o nome exato da placa/módulo onde você vai medir (como está escrito nela)?
+- Você vai medir na placa principal (série) ou no operador de porta (comunicação)?
+- Tem algum código/mensagem no terminal? Qual?`;
+      }
+    }
     
     const endTime = Date.now();
     
