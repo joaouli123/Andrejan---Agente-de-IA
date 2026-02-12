@@ -37,7 +37,7 @@ const responseCache = new Map();
 const RESPONSE_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 const RESPONSE_CACHE_MAX = 50;
 // Bump this when changing prompts/guardrails to avoid serving stale cached answers
-const RESPONSE_CACHE_VERSION = '2026-02-12-3';
+const RESPONSE_CACHE_VERSION = '2026-02-12-4';
 
 /**
  * Corrige encoding corrompido (UTF-8 decodificado como Latin-1)
@@ -423,9 +423,16 @@ function extractSessionState(question, conversationHistory, brandFilter, signals
   const upper = allText.toUpperCase();
   const brand = brandFilter || (/(\bORONA\b|\bOTIS\b)/i.exec(allText)?.[1] || null);
 
-  // Heurística leve para "Arca II" sem chutar nomes novos
+  // Heurísticas leves para modelo (somente quando o texto já traz explicitamente)
+  // Orona: "Arca II" etc.
   const arcaMatch = /\b(ORONA\s+)?ARCA\s*(I{1,3}|IV|V|VI|\d+)\b/i.exec(allText);
-  const model = arcaMatch ? `Arca ${arcaMatch[2].toUpperCase()}` : null;
+  const oronaModel = arcaMatch ? `Arca ${arcaMatch[2].toUpperCase()}` : null;
+
+  // Otis: detectar "Gen2" quando explícito (não inventa outros modelos)
+  const gen2Match = /\bGEN\s*2\b/i.exec(allText);
+  const otisModel = gen2Match ? 'Gen2' : null;
+
+  const model = oronaModel || otisModel;
 
   const board = (signals?.boardTokens?.length || 0) ? signals.boardTokens.join(', ') : null;
   const error = (signals?.errorTokens?.length || 0) ? signals.errorTokens[0] : null;
@@ -434,6 +441,53 @@ function extractSessionState(question, conversationHistory, brandFilter, signals
   const connector = (upper.match(/\bCN\d{1,2}\b/g) || [])[0] || null;
 
   return { brand, model, board, error, connector };
+}
+
+function isOtisBrand(brand) {
+  return normalizeText(brand || '') === 'otis';
+}
+
+function isGenericOtisQuestion(question) {
+  const q = normalizeText(question);
+  if (!q) return false;
+
+  // Não aplicar quando a pergunta já é de fluxo/procedimento ou específica
+  if (isPinoutQuery(question)) return false;
+  if (isDiagnosticWorkflowQuery(question)) return false;
+  if (isBusVsSafetyDisambiguationQuery(question)) return false;
+  if (isIntermittentSafetyChainQuery(question)) return false;
+  if (classifyIntent(question) === INTENT.safetyChain) return false;
+
+  const genericSignals = [
+    'parado',
+    'sem movimento',
+    'nao anda',
+    'nao sai do lugar',
+    'falha',
+    'porta',
+    'o que fazer',
+    'como resolver',
+    'nao funciona',
+  ];
+
+  if (!genericSignals.some(s => q.includes(s))) return false;
+
+  // Perguntas curtas e sem detalhes tendem a exigir modelo/código
+  if (q.length > 140) return false;
+
+  // Se a própria frase já traz bastante detalhe, não precisa bloquear
+  const hasDetail = /(fecha.*reabre|reabre|nivelamento|nivelar|intermit|ru[ií]do|cortina|trinco|contato|borda|sensor|limitador|forca)/i.test(question || '');
+  if (hasDetail) return false;
+
+  return true;
+}
+
+function buildOtisGenericGateQuestions(sessionState, signals) {
+  const hasError = (signals?.errorTokens?.length || 0) > 0 || Boolean(sessionState?.error);
+  const questions = ['Qual é o modelo do elevador Otis?'];
+  if (!hasError) questions.push('Qual código/mensagem aparece no display/terminal (se houver)?');
+  questions.push('Ele está parado em qual andar e com a porta em qual estado (aberta/fechada/reabrindo)?');
+  return questions.slice(0, 3);
 }
 
 function extractSearchSignals(question, conversationHistory) {
@@ -570,6 +624,21 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
     
     const signals = extractSearchSignals(question, conversationHistory);
     const sessionState = extractSessionState(question, conversationHistory, effectiveBrandFilter, signals);
+
+    // Otis: para perguntas genéricas, exija modelo/código antes de responder.
+    // Evita checklist genérico quando há muito conteúdo e o modelo muda o diagnóstico.
+    const hasModel = Boolean(sessionState?.model);
+    const hasBoard = (signals?.boardTokens?.length || 0) > 0 || Boolean(sessionState?.board);
+    const hasError = (signals?.errorTokens?.length || 0) > 0 || Boolean(sessionState?.error);
+    if (isOtisBrand(effectiveBrandFilter) && !hasModel && !hasBoard && !hasError && isGenericOtisQuestion(question)) {
+      const qs = buildOtisGenericGateQuestions(sessionState, signals);
+      return {
+        answer: `Para eu responder com precisão no padrão Otis (sem generalização), preciso destas informações:
+${qs.map(q => `- ${q}`).join('\n')}`,
+        sources: [],
+        searchTime: Date.now() - startTime,
+      };
+    }
 
     // Query original enriquecida com contexto + sinais (placa/erro) para melhorar recall
     let enrichedQuery = question;
