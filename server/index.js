@@ -294,22 +294,22 @@ app.post('/api/reindex', adminMiddleware, async (req, res) => {
  * Verifica quais arquivos já estão indexados (para skip de duplicatas)
  * Verifica tanto no vector store quanto no disco
  */
-app.post('/api/check-duplicates', adminMiddleware, (req, res) => {
+app.post('/api/check-duplicates', adminMiddleware, async (req, res) => {
   try {
     const { fileNames } = req.body;
     if (!fileNames || !Array.isArray(fileNames)) {
       return res.status(400).json({ error: 'fileNames deve ser um array' });
     }
     const loading = isLoading();
-    const results = fileNames.map(name => {
+    const results = await Promise.all(fileNames.map(async (name) => {
       // Verifica no vector store (se já carregou) OU no disco como fallback
-      const inVectorStore = !loading && hasSource(name);
+      const inVectorStore = !loading ? await hasSource(name) : false;
       const onDisk = fileExistsOnDisk(name);
       return {
         name,
         exists: inVectorStore || onDisk
       };
-    });
+    }));
     const duplicates = results.filter(r => r.exists).map(r => r.name);
     const newFiles = results.filter(r => !r.exists).map(r => r.name);
     res.json({ duplicates, newFiles, total: fileNames.length, loading });
@@ -332,7 +332,7 @@ app.post('/api/upload', adminMiddleware, uploadLimiter, upload.single('pdf'), as
   // Verificação server-side: se o arquivo já foi indexado, pula
   // Exclui o arquivo recém-salvo pelo multer para não dar falso positivo
   const uploadedFilename = path.basename(req.file.path);
-  const alreadyInVectorStore = !isLoading() && hasSource(originalName);
+  const alreadyInVectorStore = !isLoading() ? await hasSource(originalName) : false;
   const alreadyOnDisk = fileExistsOnDisk(originalName, uploadedFilename);
   if (alreadyInVectorStore || alreadyOnDisk) {
     // Remove o arquivo enviado pois já existe
