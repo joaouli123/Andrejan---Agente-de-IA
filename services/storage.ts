@@ -201,10 +201,12 @@ const clearLegacyAgentLocalData = () => {
 };
 
 export const getAgents = (): Agent[] => {
-    return runtimeAgents;
+    return runtimeAgents.filter(a => !isBlockedLegacyAgent(a));
 };
 
 export const saveAgent = (agent: Agent) => {
+    if (isBlockedLegacyAgent(agent)) return;
+
     const index = runtimeAgents.findIndex((a: Agent) => a.id === agent.id);
     if (index >= 0) {
         runtimeAgents[index] = agent;
@@ -232,6 +234,31 @@ type SupabaseAgentRow = {
 
 const REMOVED_AGENT_IDS = new Set(['general-tech', 'code-master']);
 
+const normalizeAgentText = (value?: string | null): string =>
+    String(value || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+const isBlockedLegacyAgent = (agent: Partial<Agent> & { id?: string }) => {
+    if (agent.id && REMOVED_AGENT_IDS.has(agent.id)) return true;
+
+    const name = normalizeAgentText(agent.name);
+    const role = normalizeAgentText(agent.role);
+    const description = normalizeAgentText(agent.description);
+
+    const blockedByName = name === 'mestre dos codigos' || name === 'tecnico geral';
+    const blockedByRole = role === 'decodificador' || role === 'diagnostico universal';
+    const blockedByDescription =
+        description.includes('especialista em codigos de erro') ||
+        description.includes('especialista multimarcas');
+
+    return blockedByName || blockedByRole || blockedByDescription;
+};
+
 const mapSupabaseAgentToApp = (row: SupabaseAgentRow): Agent => ({
     id: row.id,
     name: row.name,
@@ -246,7 +273,7 @@ const mapSupabaseAgentToApp = (row: SupabaseAgentRow): Agent => ({
 });
 
 const setAgentsCache = (agents: Agent[]) => {
-    runtimeAgents = agents;
+    runtimeAgents = agents.filter(a => !isBlockedLegacyAgent(a));
 };
 
 export const syncAgentsFromDatabase = async (): Promise<Agent[]> => {
@@ -270,9 +297,20 @@ export const syncAgentsFromDatabase = async (): Promise<Agent[]> => {
 
         const allAgents = (data as SupabaseAgentRow[]).map(mapSupabaseAgentToApp);
 
+        const blockedAgents = allAgents.filter(a => isBlockedLegacyAgent(a));
+        if (blockedAgents.length > 0) {
+            const blockedIds = blockedAgents.map(a => a.id).filter(Boolean);
+            if (blockedIds.length > 0) {
+                await supabase
+                    .from('agents')
+                    .delete()
+                    .in('id', blockedIds);
+            }
+        }
+
         // Padrão + custom do usuário logado
         const filtered = allAgents.filter(a => {
-            if (REMOVED_AGENT_IDS.has(a.id)) return false;
+            if (isBlockedLegacyAgent(a)) return false;
             return !a.isCustom || (user && a.createdBy === user.id);
         });
         setAgentsCache(filtered);
@@ -283,8 +321,8 @@ export const syncAgentsFromDatabase = async (): Promise<Agent[]> => {
 };
 
 export const saveAgentToDatabase = async (agent: Agent): Promise<Agent> => {
-    if (REMOVED_AGENT_IDS.has(agent.id)) {
-        throw new Error('Este agente foi removido e não pode ser recriado com o mesmo ID');
+    if (isBlockedLegacyAgent(agent)) {
+        throw new Error('Este agente foi descontinuado e não pode ser criado');
     }
 
     const user = getUserProfile();
