@@ -158,6 +158,19 @@ const DOOR_BUS_KEYWORDS = [
   'barramento',
 ];
 
+const PINOUT_KEYWORDS = [
+  'cn',
+  'conector',
+  'pino',
+  'pinagem',
+  'borne',
+  'bornes',
+  'terminal',
+  'tabela',
+  'esquema',
+  'diagrama',
+];
+
 function normalizeText(s) {
   return (s || '')
     .toString()
@@ -170,6 +183,13 @@ function classifyIntent(question) {
   const q = normalizeText(question);
   if (SAFETY_CHAIN_KEYWORDS.some(k => q.includes(k))) return INTENT.safetyChain;
   return INTENT.general;
+}
+
+function isPinoutQuery(question) {
+  const q = normalizeText(question);
+  if (/\bcn\d{1,2}\b/.test(q)) return true;
+  if (PINOUT_KEYWORDS.some(k => q.includes(k))) return true;
+  return false;
 }
 
 function docText(doc) {
@@ -186,27 +206,63 @@ function countHits(text, keywords) {
   return hits;
 }
 
-function rerankAndFilterDocs(docs, intent) {
+function rerankAndFilterDocs(docs, intent, pinoutQuery = false) {
   if (!docs || docs.length === 0) return docs;
-  if (intent !== INTENT.safetyChain) return docs;
+
+  if (intent !== INTENT.safetyChain && !pinoutQuery) return docs;
 
   // Para perguntas de série/segurança: prioriza termos de segurança e evita docs de comunicação/CAN.
+  // Para pinagem (CN/pinos): prioriza trechos que contenham CN/conector/pino/tabela/diagrama.
   const scored = docs.map(d => {
     const t = docText(d);
     const safetyHits = countHits(t, SAFETY_CHAIN_KEYWORDS);
     const busHits = countHits(t, DOOR_BUS_KEYWORDS);
+    const pinHits = pinoutQuery ? countHits(t, PINOUT_KEYWORDS) : 0;
     const penalty = busHits >= 2 ? 2 : busHits; // penaliza forte CAN/C_L/C_H
-    const score = (d.similarity || 0) + safetyHits * 0.06 - penalty * 0.08;
-    return { doc: d, score, safetyHits, busHits };
+
+    let score = (d.similarity || 0);
+    if (intent === INTENT.safetyChain) score += safetyHits * 0.06 - penalty * 0.08;
+    if (pinoutQuery) score += pinHits * 0.035;
+
+    return { doc: d, score, safetyHits, busHits, pinHits };
   });
 
   // Filtra fora docs que parecem puramente CAN/bus (muitos termos de BUS e zero termos de segurança)
   const filtered = scored
-    .filter(s => !(s.busHits >= 2 && s.safetyHits === 0))
+    .filter(s => {
+      if (intent === INTENT.safetyChain) {
+        return !(s.busHits >= 2 && s.safetyHits === 0);
+      }
+      return true;
+    })
     .sort((a, b) => b.score - a.score)
     .map(s => s.doc);
 
   return filtered.length ? filtered : docs;
+}
+
+function extractSessionState(question, conversationHistory, brandFilter, signals) {
+  const allText = [
+    ...(conversationHistory || []).map(m => m?.parts?.[0]?.text || ''),
+    question || '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const upper = allText.toUpperCase();
+  const brand = brandFilter || (/(\bORONA\b|\bOTIS\b)/i.exec(allText)?.[1] || null);
+
+  // Heurística leve para "Arca II" sem chutar nomes novos
+  const arcaMatch = /\b(ORONA\s+)?ARCA\s*(I{1,3}|IV|V|VI|\d+)\b/i.exec(allText);
+  const model = arcaMatch ? `Arca ${arcaMatch[2].toUpperCase()}` : null;
+
+  const board = (signals?.boardTokens?.length || 0) ? signals.boardTokens.join(', ') : null;
+  const error = (signals?.errorTokens?.length || 0) ? signals.errorTokens[0] : null;
+
+  // Conector citado (CN1 etc.)
+  const connector = (upper.match(/\bCN\d{1,2}\b/g) || [])[0] || null;
+
+  return { brand, model, board, error, connector };
 }
 
 function extractSearchSignals(question, conversationHistory) {
@@ -287,12 +343,14 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
   
   try {
     const intent = classifyIntent(question);
+    const pinoutQuery = isPinoutQuery(question);
 
     // ═══ MULTI-QUERY RETRIEVAL ═══
     // Em vez de buscar com uma query só, gera variações para encontrar mais documentos relevantes
     console.log('🔍 Gerando queries de busca...');
     
     const signals = extractSearchSignals(question, conversationHistory);
+    const sessionState = extractSessionState(question, conversationHistory, brandFilter, signals);
 
     // Query original enriquecida com contexto + sinais (placa/erro) para melhorar recall
     let enrichedQuery = question;
@@ -307,7 +365,18 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
     const intentSuffix = intent === INTENT.safetyChain
       ? 'serie de seguranca serie de portas circuito de seguranca cadeia de seguranca' // ajuda recall sem inventar entidade
       : '';
-    const signalSuffix = [...(signals.boardTokens || []), ...(signals.errorTokens || []), intentSuffix].filter(Boolean).join(' ');
+    const pinoutSuffix = pinoutQuery ? 'conector pino pinagem cn tabela diagrama' : '';
+    const stateSuffixParts = [
+      sessionState?.brand,
+      sessionState?.model,
+      sessionState?.board,
+      sessionState?.connector,
+    ].filter(Boolean);
+    const stateSuffix = stateSuffixParts.length ? stateSuffixParts.join(' ') : '';
+
+    const signalSuffix = [...(signals.boardTokens || []), ...(signals.errorTokens || []), intentSuffix, pinoutSuffix, stateSuffix]
+      .filter(Boolean)
+      .join(' ');
     if (signalSuffix) enrichedQuery = `${enrichedQuery} ${signalSuffix}`;
     enrichedQuery = enrichedQuery.substring(0, 700);
     
@@ -369,7 +438,7 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
     let relevantDocs = mergedDocs.filter(doc => doc.similarity >= MIN_SIMILARITY);
 
     // ═══ DESAMBIGUAÇÃO (SÉRIE/SEGURANÇA vs. CAN/BUS) ═══
-    relevantDocs = rerankAndFilterDocs(relevantDocs, intent);
+    relevantDocs = rerankAndFilterDocs(relevantDocs, intent, pinoutQuery);
     
     console.log(`📊 ${mergedDocs.length} docs únicos encontrados, ${relevantDocs.length} acima do threshold (${MIN_SIMILARITY * 100}%)`);
     const topSim = relevantDocs.length > 0 ? relevantDocs[0].similarity : 0;
@@ -409,6 +478,26 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
 
 Pra eu te passar conector e pinos certos (sem chute), me confirma rapidinho:
 ${questions.map(q => `- ${q}`).join('\n')}`,
+          sources: [],
+          searchTime: Date.now() - startTime,
+        };
+      }
+    }
+
+    // Se é pergunta de pinagem (CN/pinos) e não há nenhum indício de CN/conector/pino no contexto, peça a página/trecho do diagrama.
+    if (pinoutQuery) {
+      const hasPinoutEvidence = relevantDocs.some(d => countHits(docText(d), PINOUT_KEYWORDS) > 0);
+      if (!hasPinoutEvidence) {
+        const connectorHint = sessionState?.connector ? ` (${sessionState.connector})` : '';
+        return {
+          answer: `Entendi — você quer pinagem física${connectorHint}. Eu só consigo te dar "pino X do conector" se isso estiver explícito no diagrama/tabela do manual.
+
+Aqui não apareceu nenhum trecho claro de pinagem/tabela na busca.
+
+Pra eu cravar os pinos sem chute, me manda uma destas coisas:
+- O número da página do PDF onde aparece o conector (CN) e a tabela de pinagem
+- Ou copia/cola o trecho do diagrama/tabela (mesmo que venha meio bagunçado)
+- Ou descreve exatamente o que está escrito do lado do conector (ex.: CN1: 1-?, 2-? etc.)`,
           sources: [],
           searchTime: Date.now() - startTime,
         };
@@ -512,6 +601,16 @@ ANTES de responder, analise o histórico e extraia TODAS as variáveis já infor
 - Andar/localização: (verifique se foi mencionado)
 
 USE todas essas informações na sua resposta. Se alguma variável IMPORTANTE ainda falta (e ela muda a resposta), aí sim pergunte — mas APENAS as que faltam.` : 'Primeira mensagem da conversa. Ainda não tem contexto. Se precisar de mais info, pergunte de forma natural.'}
+
+═══════════════════════════════════════════
+📌 ESTADO DO ATENDIMENTO (EXTRAÍDO)
+═══════════════════════════════════════════
+Trate isso como "variáveis da sessão". Use SEMPRE e NÃO esqueça depois de 2-3 mensagens.
+- Marca: ${sessionState?.brand || 'não informado'}
+- Modelo: ${sessionState?.model || 'não informado'}
+- Placa (nome que aparece): ${sessionState?.board || 'não informado'}
+- Conector citado: ${sessionState?.connector || 'não informado'}
+- Código/erro: ${sessionState?.error || 'não informado'}
 
 ═══════════════════════════════════════════
 🚫 REGRA DE OURO — SÓ FALE O QUE SABE
@@ -669,6 +768,17 @@ Pra eu te passar o conector e os pinos certos da SÉRIE (sem risco de te mandar 
 - Qual é o nome exato da placa/módulo onde você vai medir (como está escrito nela)?
 - Você vai medir na placa principal (série) ou no operador de porta (comunicação)?
 - Tem algum código/mensagem no terminal? Qual?`;
+      }
+    }
+
+    // Fallback UX para pinagem: se o técnico pediu pino/CN e a resposta não trouxe pinagem física, orientar o próximo passo sem chutar.
+    if (pinoutQuery) {
+      const hasPinNums = /\b(pinos?|pin)\s*\d+/i.test(answer) || /\bCN\d{1,2}\s*[-.:]?\s*\d+\b/i.test(answer);
+      const mentionsPointsP = /\bP\d{1,3}\b/.test(answer);
+      const indicatesNotFound = /n[aã]o\s+(consta|tem|encontrei|aparece|est[aá])\b/i.test(answer);
+
+      if (!hasPinNums && (mentionsPointsP || indicatesNotFound)) {
+        answer += `\n\nSe você conseguir, me diga a página do diagrama/tabela do ${sessionState?.connector || 'CN'} (ou cola o trecho da tabela). Aí eu consigo traduzir: "P35/P36" → "pino X do CN" com precisão.`;
       }
     }
     
