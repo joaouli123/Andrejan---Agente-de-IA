@@ -627,10 +627,10 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
 
     // Otis: para perguntas genéricas, exija modelo/código antes de responder.
     // Evita checklist genérico quando há muito conteúdo e o modelo muda o diagnóstico.
-    const hasModel = Boolean(sessionState?.model);
-    const hasBoard = (signals?.boardTokens?.length || 0) > 0 || Boolean(sessionState?.board);
-    const hasError = (signals?.errorTokens?.length || 0) > 0 || Boolean(sessionState?.error);
-    if (isOtisBrand(effectiveBrandFilter) && !hasModel && !hasBoard && !hasError && isGenericOtisQuestion(question)) {
+    const otisHasModel = Boolean(sessionState?.model);
+    const otisHasBoard = (signals?.boardTokens?.length || 0) > 0 || Boolean(sessionState?.board);
+    const otisHasError = (signals?.errorTokens?.length || 0) > 0 || Boolean(sessionState?.error);
+    if (isOtisBrand(effectiveBrandFilter) && !otisHasModel && !otisHasBoard && !otisHasError && isGenericOtisQuestion(question)) {
       const qs = buildOtisGenericGateQuestions(sessionState, signals);
       return {
         answer: `Para eu responder com precisão no padrão Otis (sem generalização), preciso destas informações:
