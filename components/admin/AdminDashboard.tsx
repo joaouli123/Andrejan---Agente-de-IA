@@ -15,6 +15,8 @@ interface UploadStatus {
   message?: string;
   pages?: number;
   chunks?: number;
+  progress?: number;
+  lastUpdatedAt?: number;
 }
 
 export default function AdminDashboard() {
@@ -44,9 +46,16 @@ export default function AdminDashboard() {
   const [filesToUpload, setFilesToUpload] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadStatuses, setUploadStatuses] = useState<UploadStatus[]>([]);
+  const [uploadNow, setUploadNow] = useState(Date.now());
   const [checkingDuplicates, setCheckingDuplicates] = useState(false);
   const [duplicateFiles, setDuplicateFiles] = useState<Set<string>>(new Set());
   const progressScrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!uploading && uploadStatuses.length === 0) return;
+    const id = setInterval(() => setUploadNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [uploading, uploadStatuses.length]);
 
   // ======================== DATA LOADING ========================
 
@@ -162,7 +171,7 @@ export default function AdminDashboard() {
   function updateFileStatus(index: number, update: Partial<UploadStatus>) {
     setUploadStatuses(prev => {
       const next = [...prev];
-      next[index] = { ...next[index], ...update };
+      next[index] = { ...next[index], ...update, lastUpdatedAt: Date.now() };
       return next;
     });
     // Preservar scroll position após re-render
@@ -193,6 +202,17 @@ export default function AdminDashboard() {
       await new Promise(r => setTimeout(r, 1000));
     }
     return { status: 'error', message: 'Timeout: processamento demorou mais de 10 minutos' };
+  }
+
+  function normalizeTaskProgress(task: any): number | undefined {
+    if (typeof task?.progress === 'number' && Number.isFinite(task.progress)) {
+      return Math.max(0, Math.min(100, Math.round(task.progress)));
+    }
+    if (task?.status === 'extracting') return 10;
+    if (task?.status === 'embedding') return 30;
+    if (task?.status === 'saving') return 95;
+    if (task?.status === 'done') return 100;
+    return undefined;
   }
 
   // Check duplicates when files are selected
@@ -262,9 +282,9 @@ export default function AdminDashboard() {
 
     const statuses: UploadStatus[] = filesToUpload.map(f => {
       if (!forceAll && duplicateFiles.has(f.name)) {
-        return { fileName: f.name, status: 'done' as const, message: '⏭️ Já indexado, ignorado' };
+        return { fileName: f.name, status: 'done' as const, message: '⏭️ Já indexado, ignorado', progress: 100, lastUpdatedAt: Date.now() };
       }
-      return { fileName: f.name, status: 'waiting' as const };
+      return { fileName: f.name, status: 'waiting' as const, progress: 0, lastUpdatedAt: Date.now() };
     });
     setUploadStatuses(statuses);
 
@@ -273,7 +293,7 @@ export default function AdminDashboard() {
       // Skip duplicates (unless force)
       if (!forceAll && duplicateFiles.has(file.name)) continue;
       try {
-        updateFileStatus(i, { status: 'uploading', message: 'Enviando arquivo...' });
+        updateFileStatus(i, { status: 'uploading', message: 'Enviando arquivo...', progress: 5 });
 
         const formData = new FormData();
         formData.append('pdf', file);
@@ -310,7 +330,7 @@ export default function AdminDashboard() {
         
         // Server-side duplicate detection
         if (uploadResult.skipped) {
-          updateFileStatus(i, { status: 'done', message: '⏭️ Já indexado no servidor, ignorado' });
+          updateFileStatus(i, { status: 'done', message: '⏭️ Já indexado no servidor, ignorado', progress: 100 });
           continue;
         }
 
@@ -320,21 +340,22 @@ export default function AdminDashboard() {
           continue;
         }
 
-        updateFileStatus(i, { status: 'processing', message: 'Processando PDF...' });
+        updateFileStatus(i, { status: 'processing', message: 'Processando PDF...', progress: 10 });
 
         const result = await pollTaskStatus(taskId, (task: any) => {
-          if (task.status === 'extracting') updateFileStatus(i, { status: 'processing', message: '📄 Extraindo texto...' });
-          else if (task.status === 'embedding') updateFileStatus(i, { status: 'processing', message: `🧠 ${task.message || 'Gerando embeddings...'}` });
-          else if (task.status === 'saving') updateFileStatus(i, { status: 'saving', message: '💾 Salvando vetores...' });
+          const taskProgress = normalizeTaskProgress(task);
+          if (task.status === 'extracting') updateFileStatus(i, { status: 'processing', message: task.message || '📄 Extraindo texto...', progress: taskProgress });
+          else if (task.status === 'embedding') updateFileStatus(i, { status: 'processing', message: `🧠 ${task.message || 'Gerando embeddings...'}`, progress: taskProgress });
+          else if (task.status === 'saving') updateFileStatus(i, { status: 'saving', message: task.message || '💾 Salvando vetores...', progress: taskProgress });
         });
 
         if (result.status === 'error') {
-          updateFileStatus(i, { status: 'error', message: result.message });
+          updateFileStatus(i, { status: 'error', message: result.message, progress: normalizeTaskProgress(result) });
           continue;
         }
 
         // Save to Supabase (check if already exists first)
-        updateFileStatus(i, { status: 'saving', message: 'Registrando no banco...' });
+        updateFileStatus(i, { status: 'saving', message: 'Registrando no banco...', progress: 98 });
         const cleanTitle = file.name.replace('.pdf', '');
         const { data: existing } = await supabase
           .from('source_files')
@@ -356,7 +377,8 @@ export default function AdminDashboard() {
 
         updateFileStatus(i, { 
           status: 'done', 
-          message: `${result.pages || '?'} páginas → ${result.chunks || '?'} chunks indexados` 
+          message: `${result.pages || '?'} páginas → ${result.chunks || '?'} chunks indexados`,
+          progress: 100
         });
       } catch (err: any) {
         console.error(`[Upload] Erro geral no arquivo ${file.name}:`, err);
@@ -546,10 +568,30 @@ export default function AdminDashboard() {
                     {['uploading', 'processing', 'saving'].includes(s.status) && <Loader2 size={16} className="text-blue-600 animate-spin" />}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="font-medium text-sm text-slate-800 truncate">{s.fileName}</p>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-medium text-sm text-slate-800 truncate">{s.fileName}</p>
+                      {typeof s.progress === 'number' && ['uploading', 'processing', 'saving', 'done'].includes(s.status) && (
+                        <span className="text-[11px] font-semibold text-slate-500">{Math.max(0, Math.min(100, Math.round(s.progress)))}%</span>
+                      )}
+                    </div>
                     <p className={`text-xs ${s.status === 'done' ? 'text-green-700' : s.status === 'error' ? 'text-red-600' : 'text-blue-600'}`}>
                       {s.message || (s.status === 'waiting' ? 'Aguardando...' : 'Processando...')}
                     </p>
+                    {typeof s.progress === 'number' && ['uploading', 'processing', 'saving', 'done'].includes(s.status) && (
+                      <div className="mt-1.5">
+                        <div className="h-1.5 w-full rounded-full bg-slate-200 overflow-hidden">
+                          <div
+                            className={`h-full transition-all duration-500 ${s.status === 'done' ? 'bg-green-500' : s.status === 'error' ? 'bg-red-500' : 'bg-blue-500'}`}
+                            style={{ width: `${Math.max(0, Math.min(100, Math.round(s.progress)))}%` }}
+                          />
+                        </div>
+                        {['uploading', 'processing', 'saving'].includes(s.status) && s.lastUpdatedAt && (
+                          <p className="mt-1 text-[10px] text-slate-400">
+                            {uploadNow - s.lastUpdatedAt > 25000 ? `Sem atualização há ${Math.floor((uploadNow - s.lastUpdatedAt) / 1000)}s` : 'Atualizando em tempo real...'}
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
