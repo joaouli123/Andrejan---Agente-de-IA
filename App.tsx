@@ -17,7 +17,7 @@ import { verifyMercadoPagoPayment } from './services/paymentApi';
 type ViewState = 'landing' | 'login' | 'register' | 'app' | 'checkout' | 'confirmation';
 
 const App: React.FC = () => {
-  const [view, setView] = useState<ViewState>('login');
+  const [view, setView] = useState<ViewState>('landing');
   const [selectedPlan, setSelectedPlan] = useState<Plan | null>(null);
   const [registrationData, setRegistrationData] = useState<any>(null);
   const [paymentStatus, setPaymentStatus] = useState<'approved' | 'pending' | 'rejected'>('pending');
@@ -71,10 +71,7 @@ const App: React.FC = () => {
           setRegistrationData({ name: user.name, email: user.email });
           setView('checkout');
         } else {
-             // Fallback if plan not found, maybe show pricing or let them pick again
-             // ideally redirect to pricing, logged in as pending.
-             // For now, let's just show pricing or landing, but they are logged in.
-             setView('login');
+             setView('landing');
         }
       } else {
         setView('app');
@@ -105,7 +102,7 @@ const App: React.FC = () => {
 
   const navigateToHome = () => {
     Storage.logout();
-    setView('login');
+    setView('landing');
     window.scrollTo(0, 0);
   };
 
@@ -154,6 +151,7 @@ const App: React.FC = () => {
       {view === 'landing' && (
         <>
           <Header 
+            onNavigateHome={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
             onLogin={navigateToLogin} 
             onNavigateApp={() => {
               const pricingSection = document.getElementById('pricing');
@@ -162,36 +160,44 @@ const App: React.FC = () => {
               }
             }}
           />
-          <Hero onStart={() => {
-            const pricingSection = document.getElementById('pricing');
-            if (pricingSection) {
-              pricingSection.scrollIntoView({ behavior: 'smooth' });
-            }
-          }} />
+          <Hero 
+            onCtaClick={() => {
+              const pricingSection = document.getElementById('pricing');
+              if (pricingSection) {
+                pricingSection.scrollIntoView({ behavior: 'smooth' });
+              }
+            }}
+            onViewPlans={() => {
+              const pricingSection = document.getElementById('pricing');
+              if (pricingSection) {
+                pricingSection.scrollIntoView({ behavior: 'smooth' });
+              }
+            }}
+          />
           <Features />
           <TargetAudience />
           <Pricing onSelectPlan={handleSelectPlan} />
           <FAQ />
-          <Footer />
+          <Footer onNavigateHome={() => window.scrollTo({ top: 0, behavior: 'smooth' })} />
         </>
       )}
 
       {view === 'login' && (
-        <Auth onLoginSuccess={navigateToApp} onBack={() => setView('login')} />
+        <Auth onLoginSuccess={navigateToApp} onBack={() => setView('landing')} />
       )}
 
       {view === 'register' && selectedPlan && (
         <Register 
             plan={selectedPlan} 
             onSuccess={handleRegisterSuccess} 
-            onBack={() => setView('login')} 
+            onBack={() => setView('landing')} 
         />
       )}
 
       {view === 'checkout' && selectedPlan && (
         <Checkout
           plan={selectedPlan}
-          onBack={() => setView('login')}
+          onBack={() => setView('landing')}
           initialUserData={registrationData}
         />
       )}

@@ -10,7 +10,8 @@ const Features: React.FC = () => {
         <div className="text-center max-w-3xl mx-auto mb-20">
           <h2 className="text-base font-semibold text-blue-600 tracking-wide uppercase">Tecnologia</h2>
           <p className="mt-2 text-3xl font-extrabold text-slate-900 sm:text-4xl">
-            Transforme Defeitos Complexos em Soluções Simples
+            Transforme Defeitos Complexos em{' '}
+            <span className="text-blue-600">Soluções Simples</span>
           </p>
           <p className="mt-4 text-xl text-slate-500">
             A Elevex não é apenas um app; é a ferramenta definitiva para o setor de transporte vertical. Reunimos em um só lugar um banco de dados construído sobre mais de 20 anos de experiência de campo.

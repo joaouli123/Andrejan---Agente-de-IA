@@ -72,7 +72,7 @@ const Pricing: React.FC<PricingProps> = ({ onSelectPlan }) => {
           {PLANS.map((plan) => (
             <div
               key={plan.id}
-              className='relative flex flex-col p-8 rounded-2xl border'
+              className={`relative flex flex-col p-8 rounded-2xl border-2 transition-all ${plan.popular ? 'border-blue-600 shadow-xl shadow-blue-50 bg-white scale-[1.03]' : 'border-slate-200 bg-white hover:shadow-lg'}`}
             >
               {plan.popular && (
                 <div className='absolute top-0 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-blue-600 text-white px-4 py-1 rounded-full text-sm font-bold uppercase tracking-wide'>
@@ -93,7 +93,7 @@ const Pricing: React.FC<PricingProps> = ({ onSelectPlan }) => {
               <ul className='flex-1 space-y-4 mb-8'>
                 {plan.features.map((feature, idx) => (
                   <li key={idx} className='flex items-start'>
-                    <Check className='flex-shrink-0 h-5 w-5' />
+                    <Check className={`flex-shrink-0 h-5 w-5 ${plan.popular ? 'text-blue-600' : 'text-green-500'}`} />
                     <span className='ml-3 text-slate-600 text-sm'>{feature}</span>
                   </li>
                 ))}
@@ -101,7 +101,7 @@ const Pricing: React.FC<PricingProps> = ({ onSelectPlan }) => {
 
               <button
                 onClick={() => onSelectPlan(plan)}
-                className='w-full py-3 px-4 rounded-lg font-bold transition-colors'
+                className={`w-full py-3 px-4 rounded-full font-bold transition-all ${plan.popular ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-lg shadow-blue-200' : 'bg-slate-100 text-slate-800 hover:bg-slate-200'}`}
               >
                 {plan.id === 'free'
                   ? 'Começar Grátis'
