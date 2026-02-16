@@ -11,17 +11,58 @@ declare global {
   }
 }
 
+/* ── Payment Brand SVG Icons (monochrome) ── */
+
+const VisaIcon = () => (
+  <svg viewBox="0 0 48 16" className="h-5 w-auto" fill="currentColor">
+    <path d="M19.4 0.5L12.5 15.5H8.2L4.8 3.6C4.6 2.8 4.4 2.5 3.8 2.2C2.8 1.7 1.2 1.2 0 0.9L0.1 0.5H6.9C7.8 0.5 8.5 1 8.7 2.1L10.3 10.6L14.5 0.5H19.4ZM34 10.7C34 6.6 28.2 6.4 28.3 4.5C28.3 3.9 28.8 3.3 30 3.1C30.6 3 32.2 3 34 3.8L34.7 0.9C33.7 0.5 32.5 0.2 31 0.2C26.4 0.2 23.2 2.6 23.2 6C23.2 8.4 25.3 9.8 26.9 10.6C28.6 11.5 29.1 12 29.1 12.8C29.1 14 27.7 14.4 26.4 14.4C24.4 14.5 23.2 13.9 22.3 13.5L21.5 16.5C22.5 17 24.2 17.3 26 17.4C30.9 17.4 34 15 34 11.4V10.7ZM44.2 15.5H48L44.7 0.5H41.2C40.4 0.5 39.8 0.9 39.5 1.7L32.6 15.5H37.5L38.4 13H44.4L44.2 15.5ZM39.8 9.6L42.3 3L43.7 9.6H39.8ZM27.6 0.5L23.7 15.5H19L22.9 0.5H27.6Z"/>
+  </svg>
+);
+
+const MastercardIcon = () => (
+  <svg viewBox="0 0 38 24" className="h-5 w-auto" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <circle cx="14" cy="12" r="8" />
+    <circle cx="24" cy="12" r="8" />
+  </svg>
+);
+
+const EloIcon = () => (
+  <svg viewBox="0 0 40 16" className="h-5 w-auto" fill="currentColor">
+    <text x="0" y="13" fontFamily="Arial, sans-serif" fontSize="14" fontWeight="bold" letterSpacing="-0.5">elo</text>
+  </svg>
+);
+
+const AmexIcon = () => (
+  <svg viewBox="0 0 40 16" className="h-5 w-auto" fill="currentColor">
+    <text x="0" y="13" fontFamily="Arial, sans-serif" fontSize="10" fontWeight="bold" letterSpacing="0.5">AMEX</text>
+  </svg>
+);
+
+const PixIcon = () => (
+  <svg viewBox="0 0 24 24" className="h-5 w-auto" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M6.5 6.5L12 12m0 0l5.5 5.5M12 12l5.5-5.5M12 12L6.5 17.5" />
+    <rect x="3" y="3" width="18" height="18" rx="3" />
+  </svg>
+);
+
 /* ── Helpers ── */
 
 function detectCardBrand(cardNumber: string) {
   const n = cardNumber.replace(/\s/g, '');
-  if (/^4/.test(n)) return { id: 'visa', label: 'Visa', color: '#1a1f71' };
-  if (/^5[1-5]/.test(n) || /^2[2-7]/.test(n)) return { id: 'master', label: 'Mastercard', color: '#eb001b' };
-  if (/^3[47]/.test(n)) return { id: 'amex', label: 'Amex', color: '#006fcf' };
-  if (/^636368|^438935|^504175|^451416|^636297|^5067|^4576|^4011/.test(n)) return { id: 'elo', label: 'Elo', color: '#000' };
-  if (/^606282|^384[1][0-6]0/.test(n)) return { id: 'hipercard', label: 'Hipercard', color: '#822124' };
+  if (/^4/.test(n)) return { id: 'visa', label: 'Visa' };
+  if (/^5[1-5]/.test(n) || /^2[2-7]/.test(n)) return { id: 'master', label: 'Mastercard' };
+  if (/^3[47]/.test(n)) return { id: 'amex', label: 'Amex' };
+  if (/^636368|^438935|^504175|^451416|^636297|^5067|^4576|^4011/.test(n)) return { id: 'elo', label: 'Elo' };
+  if (/^606282|^384[1][0-6]0/.test(n)) return { id: 'hipercard', label: 'Hipercard' };
   return null;
 }
+
+const BrandIconMap: Record<string, React.FC> = {
+  visa: VisaIcon,
+  master: MastercardIcon,
+  elo: EloIcon,
+  amex: AmexIcon,
+};
 
 function formatCardNumber(v: string) {
   return v.replace(/\D/g, '').slice(0, 16).replace(/(\d{4})(?=\d)/g, '$1 ');
@@ -91,7 +132,8 @@ const Checkout: React.FC<CheckoutProps> = ({ plan, onBack, onPaymentComplete, in
   // Timer (15 min)
   const [timeLeft, setTimeLeft] = useState(15 * 60);
 
-  // Form
+  // Form — auto-fill from registration data
+  const hasUserData = !!(initialUserData?.name && initialUserData?.email);
   const [f, setF] = useState({
     name: initialUserData?.name || '',
     email: initialUserData?.email || '',
@@ -167,6 +209,7 @@ const Checkout: React.FC<CheckoutProps> = ({ plan, onBack, onPaymentComplete, in
   };
 
   const cardBrand = detectCardBrand(f.cardNumber);
+  const CardBrandSvg = cardBrand ? BrandIconMap[cardBrand.id] : null;
   const isPersonalValid = f.name.trim().length >= 3 && /\S+@\S+\.\S+/.test(f.email) && f.cpf.replace(/\D/g, '').length === 11;
   const isCardValid = isPersonalValid && f.cardNumber.replace(/\s/g, '').length >= 15 && f.cardholderName.trim().length >= 3 && /^\d{2}\/\d{2}$/.test(f.cardExpiry) && f.cardCvv.length >= 3;
 
@@ -299,41 +342,36 @@ const Checkout: React.FC<CheckoutProps> = ({ plan, onBack, onPaymentComplete, in
 
   /* ════════════════════════ RENDER ════════════════════════ */
 
-  const inputCls = "w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent focus:bg-white transition-all text-[15px]";
-  const labelCls = "block text-sm font-semibold text-slate-700 mb-1.5";
+  const inputCls = "w-full px-4 py-3.5 bg-white border border-slate-200 rounded-xl text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all text-[15px]";
+  const labelCls = "block text-sm font-semibold text-slate-600 mb-1.5";
 
   return (
-    <div className="min-h-screen bg-slate-900 relative overflow-hidden">
-      {/* Background */}
-      <div className="absolute inset-0 pointer-events-none">
-        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[900px] h-[500px] bg-blue-600/10 rounded-full blur-[120px]" />
-        <div className="absolute bottom-0 right-0 w-[400px] h-[400px] bg-cyan-600/5 rounded-full blur-[100px]" />
-      </div>
+    <div className="min-h-screen bg-slate-50 relative">
 
-      {/* Header */}
-      <header className="relative z-10 border-b border-white/10">
+      {/* Header — white */}
+      <header className="bg-white border-b border-slate-200">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 flex justify-between items-center h-16">
           <div className="flex items-center">
             <div className="bg-blue-600 p-2 rounded-lg mr-2"><Cpu className="h-5 w-5 text-white" /></div>
-            <span className="text-lg font-bold text-white tracking-tight">Elevex</span>
+            <span className="text-lg font-bold text-slate-900 tracking-tight">Elevex</span>
           </div>
-          <button onClick={onBack} className="text-slate-400 hover:text-white text-sm font-medium flex items-center gap-1.5 transition-colors">
+          <button onClick={onBack} className="text-slate-500 hover:text-slate-900 text-sm font-medium flex items-center gap-1.5 transition-colors">
             <ArrowLeft size={16} /> Voltar
           </button>
         </div>
       </header>
 
       {/* Steps */}
-      <div className="relative z-10 flex items-center justify-center mt-8 mb-6">
+      <div className="flex items-center justify-center mt-8 mb-8">
         <div className="flex items-center gap-3">
           {[{ label: 'Plano', done: true }, { label: 'Cadastro', done: true }, { label: 'Pagamento', done: false }].map((s, i) => (
             <React.Fragment key={i}>
-              {i > 0 && <div className={`w-10 h-px ${s.done || i <= 2 ? 'bg-blue-600' : 'bg-white/20'}`} />}
+              {i > 0 && <div className={`w-10 h-px ${s.done ? 'bg-blue-600' : 'bg-slate-300'}`} />}
               <div className="flex items-center gap-2">
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${s.done ? 'bg-blue-600' : 'bg-white'}`}>
-                  {s.done ? <Check className="w-4 h-4 text-white" /> : <span className="text-sm font-bold text-slate-900">{i + 1}</span>}
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${s.done ? 'bg-blue-600' : 'bg-blue-600'}`}>
+                  {s.done ? <Check className="w-4 h-4 text-white" /> : <span className="text-sm font-bold text-white">{i + 1}</span>}
                 </div>
-                <span className={`text-sm font-medium hidden sm:inline ${s.done ? 'text-blue-400' : 'text-white font-bold'}`}>{s.label}</span>
+                <span className={`text-sm font-medium hidden sm:inline ${s.done ? 'text-blue-600' : 'text-slate-900 font-bold'}`}>{s.label}</span>
               </div>
             </React.Fragment>
           ))}
@@ -341,19 +379,19 @@ const Checkout: React.FC<CheckoutProps> = ({ plan, onBack, onPaymentComplete, in
       </div>
 
       {/* Main content */}
-      <div className="relative z-10 max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 pb-16">
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 pb-16">
         <div className="lg:grid lg:grid-cols-5 lg:gap-10">
           {/* ─── LEFT: Payment form (3 cols) ─── */}
           <div className="lg:col-span-3 mb-8 lg:mb-0">
-            <div className="bg-white rounded-2xl shadow-2xl overflow-hidden">
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
               {/* Form header */}
-              <div className="px-6 sm:px-8 py-5 bg-gradient-to-r from-slate-50 to-white border-b border-slate-100">
+              <div className="px-6 sm:px-8 py-5 border-b border-slate-100">
                 <div className="flex items-center justify-between">
                   <div>
                     <h2 className="text-xl font-bold text-slate-900">Assinar Plano {plan.name}</h2>
                     <p className="text-slate-500 text-sm mt-0.5">Preencha seus dados para concluir</p>
                   </div>
-                  <div className="flex items-center gap-1.5 text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5">
+                  <div className="flex items-center gap-1.5 text-blue-600 bg-blue-50 border border-blue-200 rounded-lg px-3 py-1.5">
                     <Timer size={14} />
                     <span className="text-sm font-bold font-mono">{mins}:{secs}</span>
                   </div>
@@ -393,7 +431,7 @@ const Checkout: React.FC<CheckoutProps> = ({ plan, onBack, onPaymentComplete, in
                     </div>
 
                     <div className="flex items-center justify-center gap-2 text-slate-500 text-sm">
-                      <div className="animate-pulse w-2 h-2 rounded-full bg-yellow-500" />
+                      <div className="animate-pulse w-2 h-2 rounded-full bg-blue-500" />
                       Aguardando confirmação do pagamento...
                     </div>
                   </div>
@@ -402,17 +440,42 @@ const Checkout: React.FC<CheckoutProps> = ({ plan, onBack, onPaymentComplete, in
                 /* Normal form view */
                 <form onSubmit={tab === 'card' ? handleCardPay : handlePixPay}>
                   <div className="p-6 sm:p-8 space-y-5">
-                    {/* Personal info */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div>
-                        <label className={labelCls}>Nome completo</label>
-                        <input name="name" value={f.name} onChange={handleInput} required placeholder="Seu nome completo" className={inputCls} readOnly={!!initialUserData?.name} />
+
+                    {/* User info from registration (read-only summary) */}
+                    {hasUserData && (
+                      <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Dados do cadastro</span>
+                          <Check className="w-4 h-4 text-green-500" />
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <div>
+                            <p className="text-xs text-slate-400">Nome</p>
+                            <p className="text-sm font-medium text-slate-900">{f.name}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-slate-400">Email</p>
+                            <p className="text-sm font-medium text-slate-900">{f.email}</p>
+                          </div>
+                        </div>
                       </div>
-                      <div>
-                        <label className={labelCls}>Email</label>
-                        <input name="email" type="email" value={f.email} onChange={handleInput} required placeholder="seu@email.com" className={inputCls} readOnly={!!initialUserData?.email} />
+                    )}
+
+                    {/* Show name/email only if NOT from registration */}
+                    {!hasUserData && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                          <label className={labelCls}>Nome completo</label>
+                          <input name="name" value={f.name} onChange={handleInput} required placeholder="Seu nome completo" className={inputCls} />
+                        </div>
+                        <div>
+                          <label className={labelCls}>Email</label>
+                          <input name="email" type="email" value={f.email} onChange={handleInput} required placeholder="seu@email.com" className={inputCls} />
+                        </div>
                       </div>
-                    </div>
+                    )}
+
+                    {/* CPF + Phone */}
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div>
                         <label className={labelCls}>CPF</label>
@@ -437,16 +500,16 @@ const Checkout: React.FC<CheckoutProps> = ({ plan, onBack, onPaymentComplete, in
                       <button
                         type="button"
                         onClick={() => setTab('card')}
-                        className={`flex-1 flex items-center justify-center gap-2 py-3.5 text-sm font-bold transition-all ${tab === 'card' ? 'bg-blue-600 text-white shadow-inner' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'}`}
+                        className={`flex-1 flex items-center justify-center gap-2 py-3.5 text-sm font-bold transition-all ${tab === 'card' ? 'bg-blue-600 text-white' : 'bg-white text-slate-500 hover:bg-slate-50'}`}
                       >
                         <CreditCard size={18} /> Cartão
                       </button>
                       <button
                         type="button"
                         onClick={() => setTab('pix')}
-                        className={`flex-1 flex items-center justify-center gap-2 py-3.5 text-sm font-bold transition-all border-l border-slate-200 ${tab === 'pix' ? 'bg-blue-600 text-white shadow-inner' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'}`}
+                        className={`flex-1 flex items-center justify-center gap-2 py-3.5 text-sm font-bold transition-all border-l border-slate-200 ${tab === 'pix' ? 'bg-blue-600 text-white' : 'bg-white text-slate-500 hover:bg-slate-50'}`}
                       >
-                        <Smartphone size={16} /> PIX
+                        <span className="text-current"><PixIcon /></span> PIX
                       </button>
                     </div>
 
@@ -456,10 +519,10 @@ const Checkout: React.FC<CheckoutProps> = ({ plan, onBack, onPaymentComplete, in
                         <div>
                           <label className={labelCls}>Número do cartão</label>
                           <div className="relative">
-                            <input name="cardNumber" value={f.cardNumber} onChange={handleInput} required placeholder="0000 0000 0000 0000" className={`${inputCls} pr-14`} inputMode="numeric" autoComplete="cc-number" />
-                            {cardBrand && (
-                              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold px-2 py-1 rounded bg-slate-100 border border-slate-200" style={{ color: cardBrand.color }}>
-                                {cardBrand.label}
+                            <input name="cardNumber" value={f.cardNumber} onChange={handleInput} required placeholder="0000 0000 0000 0000" className={`${inputCls} pr-16`} inputMode="numeric" autoComplete="cc-number" />
+                            {CardBrandSvg && (
+                              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500">
+                                <CardBrandSvg />
                               </span>
                             )}
                           </div>
@@ -500,9 +563,9 @@ const Checkout: React.FC<CheckoutProps> = ({ plan, onBack, onPaymentComplete, in
 
                     {/* PIX info */}
                     {tab === 'pix' && (
-                      <div className="rounded-xl bg-cyan-50 border border-cyan-200 p-5">
+                      <div className="rounded-xl bg-blue-50 border border-blue-200 p-5">
                         <div className="flex items-start gap-3">
-                          <div className="w-10 h-10 rounded-lg bg-cyan-600 flex items-center justify-center flex-shrink-0">
+                          <div className="w-10 h-10 rounded-lg bg-blue-600 flex items-center justify-center flex-shrink-0">
                             <Smartphone className="w-5 h-5 text-white" />
                           </div>
                           <div>
@@ -529,7 +592,7 @@ const Checkout: React.FC<CheckoutProps> = ({ plan, onBack, onPaymentComplete, in
                     <button
                       type="submit"
                       disabled={loading || (tab === 'card' ? !isCardValid : !isPersonalValid) || (!mpReady && tab === 'card')}
-                      className="w-full py-4 px-6 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white font-bold text-base rounded-xl transition-all shadow-lg shadow-blue-600/25 hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                      className="w-full py-4 px-6 bg-blue-600 hover:bg-blue-700 text-white font-bold text-base rounded-xl transition-all shadow-lg shadow-blue-600/20 hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                     >
                       {loading ? (
                         <span className="flex items-center gap-2">
@@ -539,7 +602,7 @@ const Checkout: React.FC<CheckoutProps> = ({ plan, onBack, onPaymentComplete, in
                       ) : tab === 'card' ? (
                         <><Lock size={16} /> Assinar por R$ {plan.price.toFixed(2)}/mês</>
                       ) : (
-                        <><Smartphone size={16} /> Gerar PIX — R$ {plan.price.toFixed(2)}</>
+                        <><span className="text-white"><PixIcon /></span> Gerar PIX — R$ {plan.price.toFixed(2)}</>
                       )}
                     </button>
 
@@ -554,71 +617,73 @@ const Checkout: React.FC<CheckoutProps> = ({ plan, onBack, onPaymentComplete, in
 
           {/* ─── RIGHT: Order summary (2 cols) ─── */}
           <div className="lg:col-span-2">
-            <div className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-2xl p-6 lg:sticky lg:top-24">
+            <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-6 lg:sticky lg:top-24">
               <div className="flex items-center gap-3 mb-5">
-                <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center">
+                <div className="w-12 h-12 rounded-xl bg-blue-600 flex items-center justify-center">
                   <Zap className="w-6 h-6 text-white" />
                 </div>
                 <div>
-                  <h3 className="text-white font-bold text-lg">Plano {plan.name}</h3>
-                  <p className="text-slate-400 text-sm">Assinatura mensal</p>
+                  <h3 className="text-slate-900 font-bold text-lg">Plano {plan.name}</h3>
+                  <p className="text-slate-500 text-sm">Assinatura mensal</p>
                 </div>
               </div>
 
               <ul className="space-y-2.5 mb-5">
                 {plan.features.map((ft, i) => (
                   <li key={i} className="flex items-center gap-2.5">
-                    <div className="w-5 h-5 rounded-full bg-green-500/20 flex items-center justify-center flex-shrink-0">
-                      <Check className="w-3 h-3 text-green-400" />
+                    <div className="w-5 h-5 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
+                      <Check className="w-3 h-3 text-green-600" />
                     </div>
-                    <span className="text-slate-300 text-sm">{ft}</span>
+                    <span className="text-slate-600 text-sm">{ft}</span>
                   </li>
                 ))}
               </ul>
 
-              <div className="border-t border-white/10 pt-5">
+              <div className="border-t border-slate-200 pt-5">
                 <div className="flex items-baseline justify-between">
-                  <span className="text-slate-400 text-sm">Total mensal</span>
+                  <span className="text-slate-500 text-sm">Total mensal</span>
                   <div>
-                    <span className="text-3xl font-extrabold text-white">R$ {plan.price.toFixed(2)}</span>
+                    <span className="text-3xl font-extrabold text-slate-900">R$ {plan.price.toFixed(2)}</span>
                     <span className="text-slate-400 text-sm ml-1">/{plan.period}</span>
                   </div>
                 </div>
               </div>
 
-              <div className="mt-5 space-y-2.5 pt-5 border-t border-white/10">
-                <div className="flex items-center gap-2 text-sm text-slate-400">
-                  <ShieldCheck className="w-4 h-4 text-green-400" />
+              <div className="mt-5 space-y-2.5 pt-5 border-t border-slate-200">
+                <div className="flex items-center gap-2 text-sm text-slate-500">
+                  <ShieldCheck className="w-4 h-4 text-green-500" />
                   <span>Pagamento seguro</span>
                 </div>
-                <div className="flex items-center gap-2 text-sm text-slate-400">
-                  <Lock className="w-4 h-4 text-slate-500" />
+                <div className="flex items-center gap-2 text-sm text-slate-500">
+                  <Lock className="w-4 h-4 text-slate-400" />
                   <span>Dados protegidos</span>
                 </div>
-                <div className="flex items-center gap-2 text-sm text-slate-400">
-                  <ShieldCheck className="w-4 h-4 text-blue-400" />
+                <div className="flex items-center gap-2 text-sm text-slate-500">
+                  <ShieldCheck className="w-4 h-4 text-blue-500" />
                   <span>Garantia de 7 dias</span>
                 </div>
-                <div className="flex items-center gap-2 text-sm text-slate-400">
-                  <Clock className="w-4 h-4 text-slate-500" />
+                <div className="flex items-center gap-2 text-sm text-slate-500">
+                  <Clock className="w-4 h-4 text-slate-400" />
                   <span>Cancele quando quiser</span>
                 </div>
               </div>
 
-              <div className="mt-5 pt-5 border-t border-white/10">
+              <div className="mt-5 pt-5 border-t border-slate-200">
                 <div className="flex items-center justify-center gap-2 text-sm">
-                  <Timer size={14} className="text-amber-400" />
-                  <span className="text-slate-400">Finalize em</span>
-                  <span className="font-bold font-mono text-amber-400">{mins}:{secs}</span>
+                  <Timer size={14} className="text-blue-600" />
+                  <span className="text-slate-500">Finalize em</span>
+                  <span className="font-bold font-mono text-blue-600">{mins}:{secs}</span>
                 </div>
               </div>
 
-              <div className="mt-5 pt-5 border-t border-white/10">
-                <p className="text-xs text-slate-500 text-center mb-3">Aceitamos</p>
-                <div className="flex flex-wrap justify-center gap-2">
-                  {['Visa', 'Mastercard', 'Elo', 'Amex', 'PIX'].map(m => (
-                    <span key={m} className="text-[10px] font-semibold text-slate-400 bg-white/5 border border-white/10 rounded-md px-2 py-1">{m}</span>
-                  ))}
+              <div className="mt-5 pt-5 border-t border-slate-200">
+                <p className="text-xs text-slate-400 text-center mb-3">Aceitamos</p>
+                <div className="flex flex-wrap items-center justify-center gap-3 text-slate-400">
+                  <span title="Visa"><VisaIcon /></span>
+                  <span title="Mastercard"><MastercardIcon /></span>
+                  <span title="Elo"><EloIcon /></span>
+                  <span title="Amex"><AmexIcon /></span>
+                  <span title="PIX"><PixIcon /></span>
                 </div>
               </div>
             </div>
@@ -627,15 +692,15 @@ const Checkout: React.FC<CheckoutProps> = ({ plan, onBack, onPaymentComplete, in
       </div>
 
       {/* Footer */}
-      <footer className="relative z-10 border-t border-white/10 py-6">
+      <footer className="border-t border-slate-200 py-6 bg-white">
         <div className="max-w-6xl mx-auto px-4 text-center">
-          <p className="text-slate-500 text-sm">&copy; {new Date().getFullYear()} Elevex Tecnologia Ltda. Todos os direitos reservados.</p>
+          <p className="text-slate-400 text-sm">&copy; {new Date().getFullYear()} Elevex Tecnologia Ltda. Todos os direitos reservados.</p>
         </div>
       </footer>
 
       {/* Success Overlay */}
       {showSuccess && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="bg-white rounded-3xl p-10 max-w-sm w-full mx-4 text-center shadow-2xl">
             <div className="w-20 h-20 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-5">
               <CheckCircle size={44} className="text-green-600" />
