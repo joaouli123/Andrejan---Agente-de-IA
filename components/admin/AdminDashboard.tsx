@@ -495,198 +495,12 @@ export default function AdminDashboard() {
     );
   };
 
-  // ======================== UPLOAD MODAL ========================
+  // ======================== UPLOAD MODAL (variables) ========================
 
-  const UploadModal = () => {
-    if (!uploadTarget) return null;
-    const brand = brands.find(b => b.id === uploadTarget.brandId);
-    const model = uploadTarget.modelId 
-      ? (modelsMap[uploadTarget.brandId] || []).find(m => m.id === uploadTarget.modelId)
-      : null;
-
-    return (
-      <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => !uploading && setUploadTarget(null)}>
-        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6" onClick={e => e.stopPropagation()}>
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h3 className="text-lg font-bold text-slate-900">Upload de PDFs</h3>
-              <p className="text-sm text-slate-500 mt-0.5">
-                {brand?.name}{model ? ` → ${model.name}` : ' (Geral)'}
-              </p>
-            </div>
-            {!uploading && (
-              <button onClick={() => setUploadTarget(null)} className="p-2 hover:bg-slate-100 rounded-lg">
-                <X size={20} className="text-slate-400" />
-              </button>
-            )}
-          </div>
-
-          {/* Server status */}
-          {!uploading && uploadStatuses.length === 0 && (
-            <div className={`flex items-center gap-2 text-xs px-3 py-1.5 rounded-lg mb-3 ${
-              serverStatus === 'online' ? 'bg-green-50 text-green-700' :
-              serverStatus === 'offline' ? 'bg-red-50 text-red-700' :
-              'bg-slate-50 text-slate-500'
-            }`}>
-              <span className={`w-2 h-2 rounded-full ${
-                serverStatus === 'online' ? 'bg-green-500' :
-                serverStatus === 'offline' ? 'bg-red-500' :
-                'bg-slate-400 animate-pulse'
-              }`} />
-              {serverStatus === 'online' ? 'Servidor conectado' :
-               serverStatus === 'offline' ? 'Servidor offline — verifique se está rodando' :
-               'Verificando conexão...'}
-              {serverStatus === 'offline' && (
-                <button onClick={() => { setServerStatus('checking'); fetch(ragUrl('/api/health'), { headers: ragHeaders() }).then(r => r.json()).then(() => setServerStatus('online')).catch(() => setServerStatus('offline')); }} className="ml-auto underline font-medium">Tentar novamente</button>
-              )}
-            </div>
-          )}
-
-          {/* Drop zone */}
-          {!uploading && uploadStatuses.length === 0 && (
-            <>
-              {/* Hidden file input */}
-              <input
-                ref={fileInputRef}
-                type="file" accept=".pdf" multiple
-                className="hidden"
-                onChange={e => {
-                  handleFilesSelected(e.target.files);
-                  // Reset input so the same file can be selected again
-                  e.target.value = '';
-                }}
-              />
-              <div
-                className={`border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center transition-all cursor-pointer mb-4 ${
-                  dragging
-                    ? 'border-blue-500 bg-blue-50 scale-[1.02]'
-                    : 'border-slate-300 text-slate-500 hover:bg-blue-50/30 hover:border-blue-400'
-                }`}
-                onClick={() => fileInputRef.current?.click()}
-                onDragOver={e => { e.preventDefault(); e.stopPropagation(); setDragging(true); }}
-                onDragEnter={e => { e.preventDefault(); e.stopPropagation(); setDragging(true); }}
-                onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setDragging(false); }}
-                onDrop={e => {
-                  e.preventDefault(); e.stopPropagation(); setDragging(false);
-                  handleFilesSelected(e.dataTransfer.files);
-                }}
-              >
-                <Upload size={36} className={`mb-2 ${dragging ? 'text-blue-500' : 'text-slate-400'}`} />
-                <p className="font-semibold text-slate-700 text-sm">
-                  {dragging ? 'Solte os PDFs aqui!' : 'Clique ou arraste PDFs aqui'}
-                </p>
-                <p className="text-xs text-slate-400 mt-1">Apenas arquivos .pdf</p>
-              </div>
-
-              {filesToUpload.length > 0 && (
-                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 mb-4 space-y-1.5 max-h-60 overflow-y-auto">
-                  {filesToUpload.map((f, i) => {
-                    const isDuplicate = duplicateFiles.has(f.name);
-                    return (
-                    <div key={i} className={`flex items-center gap-2 text-sm ${isDuplicate ? 'opacity-50' : ''}`}>
-                      <FileText size={14} className={isDuplicate ? 'text-yellow-500' : 'text-red-500'} />
-                      <span className="truncate flex-1">{f.name}</span>
-                      {isDuplicate && <span className="text-xs bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded font-medium whitespace-nowrap">Já indexado</span>}
-                      <span className="text-xs text-slate-400">{(f.size / 1024 / 1024).toFixed(1)} MB</span>
-                    </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              <button
-                onClick={() => handleUpload(false)}
-                disabled={filesToUpload.length === 0 || checkingDuplicates || serverStatus === 'offline' || filesToUpload.every(f => duplicateFiles.has(f.name))}
-                className={`w-full py-3 rounded-xl font-bold transition-all flex items-center justify-center gap-2 ${
-                  filesToUpload.length === 0 || serverStatus === 'offline'
-                    ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
-                    : 'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed'
-                }`}
-              >
-                <Upload size={18} />
-                {checkingDuplicates ? 'Verificando duplicados...' : 
-                 duplicateFiles.size > 0 
-                   ? `Fazer Upload (${filesToUpload.length - duplicateFiles.size} novos, ${duplicateFiles.size} ignorados)` 
-                   : `Fazer Upload ${filesToUpload.length > 0 ? `(${filesToUpload.length})` : ''}`
-                }
-              </button>
-
-              {/* Force upload button when duplicates block everything */}
-              {duplicateFiles.size > 0 && filesToUpload.every(f => duplicateFiles.has(f.name)) && (
-                <button
-                  onClick={() => handleUpload(true)}
-                  className="w-full mt-2 bg-amber-500 text-white py-2.5 rounded-xl font-semibold hover:bg-amber-600 transition-all flex items-center justify-center gap-2 text-sm"
-                >
-                  <RefreshCw size={16} />
-                  Forçar Re-upload ({filesToUpload.length} arquivo{filesToUpload.length !== 1 ? 's' : ''})
-                </button>
-              )}
-            </>
-          )}
-
-          {/* Progress */}
-          {uploadStatuses.length > 0 && (
-            <div
-              ref={progressScrollRef}
-              className="space-y-2 max-h-[50vh] overflow-y-auto pr-1"
-              onScroll={(e) => {
-                const el = e.currentTarget;
-                (el as any)._userScrollPos = el.scrollTop;
-              }}
-            >
-              {[...uploadStatuses]
-                .map((s, i) => ({ ...s, originalIndex: i }))
-                .sort((a, b) => {
-                  const order: Record<string, number> = { processing: 0, saving: 0, uploading: 1, waiting: 2, error: 3, done: 4 };
-                  return (order[a.status] ?? 5) - (order[b.status] ?? 5);
-                })
-                .map((s) => (
-                <div key={s.originalIndex} className={`flex items-start gap-3 p-3 rounded-lg border ${
-                  s.status === 'done' ? 'bg-green-50 border-green-200' :
-                  s.status === 'error' ? 'bg-red-50 border-red-200' :
-                  s.status === 'waiting' ? 'bg-slate-50 border-slate-200' :
-                  'bg-blue-50 border-blue-200'
-                }`}>
-                  <div className="mt-0.5">
-                    {s.status === 'done' && <CheckCircle size={16} className="text-green-600" />}
-                    {s.status === 'error' && <XCircle size={16} className="text-red-600" />}
-                    {s.status === 'waiting' && <FileText size={16} className="text-slate-400" />}
-                    {['uploading', 'processing', 'saving'].includes(s.status) && <Loader2 size={16} className="text-blue-600 animate-spin" />}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="font-medium text-sm text-slate-800 truncate">{s.fileName}</p>
-                      {typeof s.progress === 'number' && ['uploading', 'processing', 'saving', 'done'].includes(s.status) && (
-                        <span className="text-[11px] font-semibold text-slate-500">{Math.max(0, Math.min(100, Math.round(s.progress)))}%</span>
-                      )}
-                    </div>
-                    <p className={`text-xs ${s.status === 'done' ? 'text-green-700' : s.status === 'error' ? 'text-red-600' : 'text-blue-600'}`}>
-                      {s.message || (s.status === 'waiting' ? 'Aguardando...' : 'Processando...')}
-                    </p>
-                    {typeof s.progress === 'number' && ['uploading', 'processing', 'saving', 'done'].includes(s.status) && (
-                      <div className="mt-1.5">
-                        <div className="h-1.5 w-full rounded-full bg-slate-200 overflow-hidden">
-                          <div
-                            className={`h-full transition-all duration-500 ${s.status === 'done' ? 'bg-green-500' : s.status === 'error' ? 'bg-red-500' : 'bg-blue-500'}`}
-                            style={{ width: `${Math.max(0, Math.min(100, Math.round(s.progress)))}%` }}
-                          />
-                        </div>
-                        {['uploading', 'processing', 'saving'].includes(s.status) && s.lastUpdatedAt && (
-                          <p className="mt-1 text-[10px] text-slate-400">
-                            {uploadNow - s.lastUpdatedAt > 25000 ? `Sem atualização há ${Math.floor((uploadNow - s.lastUpdatedAt) / 1000)}s` : 'Atualizando em tempo real...'}
-                          </p>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  };
+  const uploadModalBrand = uploadTarget ? brands.find(b => b.id === uploadTarget.brandId) : null;
+  const uploadModalModel = uploadTarget?.modelId 
+    ? (modelsMap[uploadTarget.brandId] || []).find(m => m.id === uploadTarget.modelId)
+    : null;
 
   // ======================== RENDER ========================
 
@@ -939,8 +753,180 @@ export default function AdminDashboard() {
         )}
       </main>
 
-      {/* Upload Modal */}
-      <UploadModal />
+      {/* Upload Modal (inline — avoids remount bug) */}
+      {uploadTarget && (
+      <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => !uploading && setUploadTarget(null)}>
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6" onClick={e => e.stopPropagation()}>
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h3 className="text-lg font-bold text-slate-900">Upload de PDFs</h3>
+              <p className="text-sm text-slate-500 mt-0.5">
+                {uploadModalBrand?.name}{uploadModalModel ? ` → ${uploadModalModel.name}` : ' (Geral)'}
+              </p>
+            </div>
+            {!uploading && (
+              <button onClick={() => setUploadTarget(null)} className="p-2 hover:bg-slate-100 rounded-lg">
+                <X size={20} className="text-slate-400" />
+              </button>
+            )}
+          </div>
+
+          {/* Server status */}
+          {!uploading && uploadStatuses.length === 0 && (
+            <div className={`flex items-center gap-2 text-xs px-3 py-1.5 rounded-lg mb-3 ${
+              serverStatus === 'online' ? 'bg-green-50 text-green-700' :
+              serverStatus === 'offline' ? 'bg-red-50 text-red-700' :
+              'bg-slate-50 text-slate-500'
+            }`}>
+              <span className={`w-2 h-2 rounded-full ${
+                serverStatus === 'online' ? 'bg-green-500' :
+                serverStatus === 'offline' ? 'bg-red-500' :
+                'bg-slate-400 animate-pulse'
+              }`} />
+              {serverStatus === 'online' ? 'Servidor conectado' :
+               serverStatus === 'offline' ? 'Servidor offline — verifique se está rodando' :
+               'Verificando conexão...'}
+              {serverStatus === 'offline' && (
+                <button onClick={() => { setServerStatus('checking'); fetch(ragUrl('/api/health'), { headers: ragHeaders() }).then(r => r.json()).then(() => setServerStatus('online')).catch(() => setServerStatus('offline')); }} className="ml-auto underline font-medium">Tentar novamente</button>
+              )}
+            </div>
+          )}
+
+          {/* Drop zone + file list + buttons */}
+          {!uploading && uploadStatuses.length === 0 && (
+            <>
+              {/* Hidden file input */}
+              <input
+                ref={fileInputRef}
+                type="file" accept=".pdf" multiple
+                className="hidden"
+                onChange={e => {
+                  handleFilesSelected(e.target.files);
+                  e.target.value = '';
+                }}
+              />
+              <div
+                className={`border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center transition-all cursor-pointer mb-4 ${
+                  dragging
+                    ? 'border-blue-500 bg-blue-50 scale-[1.02]'
+                    : 'border-slate-300 text-slate-500 hover:bg-blue-50/30 hover:border-blue-400'
+                }`}
+                onClick={() => fileInputRef.current?.click()}
+                onDragOver={e => { e.preventDefault(); e.stopPropagation(); setDragging(true); }}
+                onDragEnter={e => { e.preventDefault(); e.stopPropagation(); setDragging(true); }}
+                onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setDragging(false); }}
+                onDrop={e => {
+                  e.preventDefault(); e.stopPropagation(); setDragging(false);
+                  handleFilesSelected(e.dataTransfer.files);
+                }}
+              >
+                <Upload size={36} className={`mb-2 ${dragging ? 'text-blue-500' : 'text-slate-400'}`} />
+                <p className="font-semibold text-slate-700 text-sm">
+                  {dragging ? 'Solte os PDFs aqui!' : 'Clique ou arraste PDFs aqui'}
+                </p>
+                <p className="text-xs text-slate-400 mt-1">Apenas arquivos .pdf</p>
+              </div>
+
+              {filesToUpload.length > 0 && (
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 mb-4 space-y-1.5 max-h-60 overflow-y-auto">
+                  {filesToUpload.map((f, i) => {
+                    const isDuplicate = duplicateFiles.has(f.name);
+                    return (
+                    <div key={i} className={`flex items-center gap-2 text-sm ${isDuplicate ? 'opacity-50' : ''}`}>
+                      <FileText size={14} className={isDuplicate ? 'text-yellow-500' : 'text-red-500'} />
+                      <span className="truncate flex-1">{f.name}</span>
+                      {isDuplicate && <span className="text-xs bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded font-medium whitespace-nowrap">Já indexado</span>}
+                      <span className="text-xs text-slate-400">{(f.size / 1024 / 1024).toFixed(1)} MB</span>
+                    </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              <button
+                onClick={() => handleUpload(false)}
+                disabled={filesToUpload.length === 0 || checkingDuplicates || serverStatus === 'offline' || filesToUpload.every(f => duplicateFiles.has(f.name))}
+                className={`w-full py-3 rounded-xl font-bold transition-all flex items-center justify-center gap-2 ${
+                  filesToUpload.length === 0 || serverStatus === 'offline'
+                    ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                    : 'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed'
+                }`}
+              >
+                <Upload size={18} />
+                {checkingDuplicates ? 'Verificando duplicados...' : 
+                 duplicateFiles.size > 0 
+                   ? `Fazer Upload (${filesToUpload.length - duplicateFiles.size} novos, ${duplicateFiles.size} ignorados)` 
+                   : `Fazer Upload ${filesToUpload.length > 0 ? `(${filesToUpload.length})` : ''}`
+                }
+              </button>
+
+              {duplicateFiles.size > 0 && filesToUpload.every(f => duplicateFiles.has(f.name)) && (
+                <button
+                  onClick={() => handleUpload(true)}
+                  className="w-full mt-2 bg-amber-500 text-white py-2.5 rounded-xl font-semibold hover:bg-amber-600 transition-all flex items-center justify-center gap-2 text-sm"
+                >
+                  <RefreshCw size={16} />
+                  Forçar Re-upload ({filesToUpload.length} arquivo{filesToUpload.length !== 1 ? 's' : ''})
+                </button>
+              )}
+            </>
+          )}
+
+          {/* Progress */}
+          {uploadStatuses.length > 0 && (
+            <div ref={progressScrollRef} className="space-y-2 max-h-[50vh] overflow-y-auto pr-1">
+              {[...uploadStatuses]
+                .map((s, i) => ({ ...s, originalIndex: i }))
+                .sort((a, b) => {
+                  const order: Record<string, number> = { processing: 0, saving: 0, uploading: 1, waiting: 2, error: 3, done: 4 };
+                  return (order[a.status] ?? 5) - (order[b.status] ?? 5);
+                })
+                .map((s) => (
+                <div key={s.originalIndex} className={`flex items-start gap-3 p-3 rounded-lg border ${
+                  s.status === 'done' ? 'bg-green-50 border-green-200' :
+                  s.status === 'error' ? 'bg-red-50 border-red-200' :
+                  s.status === 'waiting' ? 'bg-slate-50 border-slate-200' :
+                  'bg-blue-50 border-blue-200'
+                }`}>
+                  <div className="mt-0.5">
+                    {s.status === 'done' && <CheckCircle size={16} className="text-green-600" />}
+                    {s.status === 'error' && <XCircle size={16} className="text-red-600" />}
+                    {s.status === 'waiting' && <FileText size={16} className="text-slate-400" />}
+                    {['uploading', 'processing', 'saving'].includes(s.status) && <Loader2 size={16} className="text-blue-600 animate-spin" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-medium text-sm text-slate-800 truncate">{s.fileName}</p>
+                      {typeof s.progress === 'number' && ['uploading', 'processing', 'saving', 'done'].includes(s.status) && (
+                        <span className="text-[11px] font-semibold text-slate-500">{Math.max(0, Math.min(100, Math.round(s.progress)))}%</span>
+                      )}
+                    </div>
+                    <p className={`text-xs ${s.status === 'done' ? 'text-green-700' : s.status === 'error' ? 'text-red-600' : 'text-blue-600'}`}>
+                      {s.message || (s.status === 'waiting' ? 'Aguardando...' : 'Processando...')}
+                    </p>
+                    {typeof s.progress === 'number' && ['uploading', 'processing', 'saving', 'done'].includes(s.status) && (
+                      <div className="mt-1.5">
+                        <div className="h-1.5 w-full rounded-full bg-slate-200 overflow-hidden">
+                          <div
+                            className={`h-full transition-all duration-500 ${s.status === 'done' ? 'bg-green-500' : s.status === 'error' ? 'bg-red-500' : 'bg-blue-500'}`}
+                            style={{ width: `${Math.max(0, Math.min(100, Math.round(s.progress)))}%` }}
+                          />
+                        </div>
+                        {['uploading', 'processing', 'saving'].includes(s.status) && s.lastUpdatedAt && (
+                          <p className="mt-1 text-[10px] text-slate-400">
+                            {uploadNow - s.lastUpdatedAt > 25000 ? `Sem atualização há ${Math.floor((uploadNow - s.lastUpdatedAt) / 1000)}s` : 'Atualizando em tempo real...'}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+      )}
     </div>
   );
 }
