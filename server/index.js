@@ -886,7 +886,7 @@ app.post('/api/upload', adminMiddleware, uploadLimiter, upload.single('pdf'), as
     status: 'extracting',
     filename: originalName,
     message: 'Extraindo texto do PDF...',
-    progress: 0,
+    progress: 5,
     pages: 0,
     chunks: 0,
     startedAt: Date.now()
@@ -914,14 +914,21 @@ async function processUploadInBackground(taskId, filePath, originalName, brandNa
     // Fase 1: Extrair texto (com OCR automático para scans/imagens)
     task.status = 'extracting';
     task.message = 'Extraindo texto do PDF (OCR em imagens/circuitos pode demorar)...';
+    task.progress = 10;
     
     let extracted;
     try {
       extracted = await extractTextWithOCR(filePath, (progress) => {
         if (progress.phase === 'ocr_start') {
           task.message = '🔍 PDF com imagens detectado, iniciando OCR...';
+          task.progress = 15;
         } else if (progress.phase === 'ocr') {
           task.message = `🔤 ${progress.message}`;
+          const p = Number.isFinite(progress.progress) ? Number(progress.progress) : 0;
+          task.progress = Math.max(15, Math.min(70, Math.round(15 + (p * 0.55))));
+        } else if (progress.phase === 'text') {
+          task.message = progress.message || 'Texto extraído normalmente';
+          task.progress = 35;
         }
       });
     } catch (extractErr) {
@@ -964,6 +971,7 @@ async function processUploadInBackground(taskId, filePath, originalName, brandNa
     
     task.chunks = chunks.length;
     task.status = 'embedding';
+    task.progress = 72;
     task.message = `Gerando embeddings para ${chunks.length} chunks...`;
     
     // Fase 3: Gerar embeddings (a parte demorada)
@@ -992,6 +1000,7 @@ async function processUploadInBackground(taskId, filePath, originalName, brandNa
     
     // Fase 4: Salvar no banco de vetores
     task.status = 'saving';
+    task.progress = 95;
     task.message = 'Salvando no banco de vetores...';
     await addDocuments(validChunks, validEmbeddings);
     

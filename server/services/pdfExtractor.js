@@ -21,6 +21,12 @@ const OCR_TEXT_THRESHOLD = 50;
 // Limiar por página: mesmo PDFs "bons" podem ter páginas de diagramas/tabelas como imagem
 const OCR_TEXT_THRESHOLD_PER_PAGE = 120;
 
+function getOcrPageTimeoutMs() {
+  const env = parseInt(process.env.OCR_PAGE_TIMEOUT_MS || '', 10);
+  if (Number.isFinite(env) && env >= 5000) return env;
+  return 45000;
+}
+
 // Pool de workers do Tesseract (CPU-bound) para usar vários cores
 let tesseractWorkers = null;
 
@@ -382,7 +388,11 @@ export async function extractTextWithOCR(filePath, onProgress) {
 
     const runRecognize = async (w, pageNumLocal, pageImage) => {
       try {
-        const result = await w.recognize(pageImage);
+        const timeoutMs = getOcrPageTimeoutMs();
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error(`Timeout OCR (${timeoutMs}ms)`)), timeoutMs);
+        });
+        const result = await Promise.race([w.recognize(pageImage), timeoutPromise]);
         const pageText = result.data.text.trim();
         if (pageText.length > 10) {
           ocrResultsByPage.set(pageNumLocal, pageText);
