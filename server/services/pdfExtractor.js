@@ -386,7 +386,10 @@ export async function extractTextWithOCR(filePath, onProgress) {
     const pending = [];
     let nextWorker = 0;
 
+    let ocrAborted = false;
+
     const runRecognize = async (w, pageNumLocal, pageImage) => {
+      if (ocrAborted) return; // Skip if already aborted
       try {
         const timeoutMs = getOcrPageTimeoutMs();
         const timeoutPromise = new Promise((_, reject) => {
@@ -398,6 +401,11 @@ export async function extractTextWithOCR(filePath, onProgress) {
           ocrResultsByPage.set(pageNumLocal, pageText);
         }
       } catch (err) {
+        // Worker already terminated (postMessage on null) — just skip
+        if (err?.message?.includes('postMessage') || err?.message?.includes('null') || err?.message?.includes('terminated')) {
+          ocrAborted = true;
+          return;
+        }
         console.warn(`   ⚠️ OCR falhou na página ${pageNumLocal}: ${err.message}`);
       }
     };
@@ -636,8 +644,11 @@ export async function processDirectory(dirPath, onProgress) {
  */
 export async function terminateOCR() {
   if (tesseractWorkers && Array.isArray(tesseractWorkers)) {
-    await Promise.allSettled(tesseractWorkers.map(w => w.terminate()));
-    tesseractWorkers = null;
+    const workers = tesseractWorkers;
+    tesseractWorkers = null; // Clear reference FIRST to prevent re-use
+    await Promise.allSettled(workers.map(w => {
+      try { return w.terminate(); } catch { return Promise.resolve(); }
+    }));
   }
 }
 

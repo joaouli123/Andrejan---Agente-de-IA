@@ -22,6 +22,14 @@ const __dirname = path.dirname(__filename);
 
 dotenv.config();
 
+// Prevent server from crashing on unhandled errors (e.g. Tesseract worker postMessage after terminate)
+process.on('uncaughtException', (err) => {
+  console.error('⚠️ Uncaught Exception (servidor mantido ativo):', err.message);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('⚠️ Unhandled Rejection (servidor mantido ativo):', reason);
+});
+
 const app = express();
 const PORT = process.env.PORT || 3002;
 const PDF_DIR = process.env.PDF_PATH || path.join(__dirname, 'data', 'pdfs');
