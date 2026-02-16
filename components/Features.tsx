@@ -85,13 +85,37 @@ const Features: React.FC = () => {
               </div>
             </div>
           </div>
-          <div className="bg-slate-800 h-full min-h-[400px] relative">
+          <div className="bg-slate-800 h-full min-h-[400px] relative flex items-center justify-center overflow-hidden">
             <img 
-              src="https://picsum.photos/800/800?grayscale" 
-              alt="Elevator Shaft Technical" 
-              className="w-full h-full object-cover opacity-50 mix-blend-overlay"
+              src="https://images.unsplash.com/photo-1677442136019-21780ecad995?w=800&h=800&fit=crop&q=80" 
+              alt="Inteligência Artificial e Tecnologia" 
+              className="w-full h-full object-cover opacity-40 mix-blend-overlay"
             />
-            <div className="absolute inset-0 bg-gradient-to-t from-slate-900 via-transparent to-transparent"></div>
+            {/* AI circuit overlay */}
+            <div className="absolute inset-0 flex items-center justify-center">
+              <svg viewBox="0 0 200 200" className="w-48 h-48 text-blue-400 opacity-30">
+                <circle cx="100" cy="100" r="60" fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray="8 4"/>
+                <circle cx="100" cy="100" r="40" fill="none" stroke="currentColor" strokeWidth="1" strokeDasharray="4 6"/>
+                <circle cx="100" cy="100" r="6" fill="currentColor" opacity="0.8"/>
+                <line x1="100" y1="40" x2="100" y2="20" stroke="currentColor" strokeWidth="1.5"/>
+                <circle cx="100" cy="16" r="4" fill="currentColor" opacity="0.6"/>
+                <line x1="100" y1="160" x2="100" y2="180" stroke="currentColor" strokeWidth="1.5"/>
+                <circle cx="100" cy="184" r="4" fill="currentColor" opacity="0.6"/>
+                <line x1="40" y1="100" x2="20" y2="100" stroke="currentColor" strokeWidth="1.5"/>
+                <circle cx="16" cy="100" r="4" fill="currentColor" opacity="0.6"/>
+                <line x1="160" y1="100" x2="180" y2="100" stroke="currentColor" strokeWidth="1.5"/>
+                <circle cx="184" cy="100" r="4" fill="currentColor" opacity="0.6"/>
+                <line x1="58" y1="58" x2="40" y2="40" stroke="currentColor" strokeWidth="1"/>
+                <circle cx="36" cy="36" r="3" fill="currentColor" opacity="0.5"/>
+                <line x1="142" y1="58" x2="160" y2="40" stroke="currentColor" strokeWidth="1"/>
+                <circle cx="164" cy="36" r="3" fill="currentColor" opacity="0.5"/>
+                <line x1="58" y1="142" x2="40" y2="160" stroke="currentColor" strokeWidth="1"/>
+                <circle cx="36" cy="164" r="3" fill="currentColor" opacity="0.5"/>
+                <line x1="142" y1="142" x2="160" y2="160" stroke="currentColor" strokeWidth="1"/>
+                <circle cx="164" cy="164" r="3" fill="currentColor" opacity="0.5"/>
+              </svg>
+            </div>
+            <div className="absolute inset-0 bg-gradient-to-t from-slate-900 via-slate-900/40 to-transparent"></div>
           </div>
         </div>
 
