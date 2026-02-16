@@ -54,6 +54,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     }
   }, [onLogout]);
 
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const profile = Storage.getUserProfile();
+      if (profile) setUser(profile);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, []);
+
     const loadSessions = async () => {
       await Storage.syncChatsFromDatabase();
       setSessions(Storage.getSessions());
@@ -63,7 +71,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     if (user) {
         void loadSessions();
     }
-  }, [currentView, activeSessionId, user]);
+  }, [user]);
 
   const handleStartChat = (agentId: string) => {
     try {

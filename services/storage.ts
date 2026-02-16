@@ -8,11 +8,35 @@ const ADMIN_USERS_KEY = 'elevex_admin_users';
 const BRANDS_KEY = 'elevex_brands';
 const MODELS_KEY = 'elevex_models';
 const SESSION_DB_ID_MAP_KEY = 'elevex_session_db_id_map';
+const QUERY_USAGE_KEY = 'elevex_query_usage';
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CHATS_SYNC_MIN_INTERVAL_MS = 5000;
+const AGENTS_SYNC_MIN_INTERVAL_MS = 15000;
+const QUERY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 let chatsSyncPromise: Promise<ChatSession[]> | null = null;
 let lastChatsSyncAt = 0;
+let agentsSyncPromise: Promise<Agent[]> | null = null;
+let lastAgentsSyncAt = 0;
+
+type QueryUsageRow = {
+    windowStart: number;
+    used: number;
+};
+
+type QueryUsageMap = Record<string, QueryUsageRow>;
+
+type PlanQuotaPolicy = {
+    limitPer24h: number | 'Infinity';
+    devices: number;
+};
+
+const PLAN_QUOTA_POLICIES: Record<UserProfile['plan'], PlanQuotaPolicy> = {
+    Free: { limitPer24h: 1, devices: 1 },
+    Iniciante: { limitPer24h: 5, devices: 1 },
+    Profissional: { limitPer24h: 'Infinity', devices: 1 },
+    Empresa: { limitPer24h: 'Infinity', devices: 5 },
+};
 
 type SupabaseChatSessionRow = {
     id: string;
@@ -71,6 +95,138 @@ const generateUuid = (): string => {
         const value = c === 'x' ? random : (random & 0x3 | 0x8);
         return value.toString(16);
     });
+};
+
+const getQueryUsageMap = (): QueryUsageMap => {
+    try {
+        const raw = localStorage.getItem(QUERY_USAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+};
+
+const saveQueryUsageMap = (usageMap: QueryUsageMap) => {
+    localStorage.setItem(QUERY_USAGE_KEY, JSON.stringify(usageMap));
+};
+
+const getPlanPolicy = (plan: UserProfile['plan']): PlanQuotaPolicy => {
+    return PLAN_QUOTA_POLICIES[plan] || PLAN_QUOTA_POLICIES.Free;
+};
+
+const normalizeProfileQuotaFields = (profile: UserProfile): UserProfile => {
+    const policy = getPlanPolicy(profile.plan);
+    const usageState = getUserQueryQuotaStatus(profile);
+    return {
+        ...profile,
+        creditsLimit: policy.limitPer24h,
+        creditsUsed: usageState.used,
+    };
+};
+
+export type UserQueryQuotaStatus = {
+    plan: UserProfile['plan'];
+    limit: number | 'Infinity';
+    used: number;
+    remaining: number | 'Infinity';
+    isBlocked: boolean;
+    resetAt: number;
+    msUntilReset: number;
+    devicesLimit: number;
+};
+
+export const getUserQueryQuotaStatus = (profile?: UserProfile | null): UserQueryQuotaStatus => {
+    const user = profile || getUserProfile();
+    if (!user) {
+        const now = Date.now();
+        return {
+            plan: 'Free',
+            limit: 1,
+            used: 0,
+            remaining: 1,
+            isBlocked: false,
+            resetAt: now + QUERY_WINDOW_MS,
+            msUntilReset: QUERY_WINDOW_MS,
+            devicesLimit: 1,
+        };
+    }
+
+    const now = Date.now();
+    const policy = getPlanPolicy(user.plan);
+    const usageMap = getQueryUsageMap();
+    const current = usageMap[user.id];
+
+    const windowStart = current?.windowStart || now;
+    const shouldReset = now - windowStart >= QUERY_WINDOW_MS;
+    const normalizedStart = shouldReset ? now : windowStart;
+    const used = shouldReset ? 0 : Math.max(0, Number(current?.used || 0));
+
+    if (shouldReset && current) {
+        usageMap[user.id] = { windowStart: normalizedStart, used: 0 };
+        saveQueryUsageMap(usageMap);
+    }
+
+    const limit = policy.limitPer24h;
+    const remaining = limit === 'Infinity' ? 'Infinity' : Math.max(0, Number(limit) - used);
+    const resetAt = normalizedStart + QUERY_WINDOW_MS;
+    const msUntilReset = Math.max(0, resetAt - now);
+    const isBlocked = limit === 'Infinity' ? false : used >= Number(limit);
+
+    return {
+        plan: user.plan,
+        limit,
+        used,
+        remaining,
+        isBlocked,
+        resetAt,
+        msUntilReset,
+        devicesLimit: policy.devices,
+    };
+};
+
+export const consumeUserQueryCredit = (profile?: UserProfile | null): { allowed: boolean; status: UserQueryQuotaStatus } => {
+    const user = profile || getUserProfile();
+    const status = getUserQueryQuotaStatus(user);
+    if (!user) return { allowed: false, status };
+    if (status.isBlocked) return { allowed: false, status };
+
+    const usageMap = getQueryUsageMap();
+    const current = usageMap[user.id];
+    const now = Date.now();
+    const shouldReset = !current || (now - current.windowStart >= QUERY_WINDOW_MS);
+    const nextUsed = shouldReset ? 1 : (Math.max(0, Number(current.used || 0)) + 1);
+    const nextStart = shouldReset ? now : current.windowStart;
+
+    usageMap[user.id] = { windowStart: nextStart, used: nextUsed };
+    saveQueryUsageMap(usageMap);
+
+    const refreshed = getUserQueryQuotaStatus(user);
+    const normalized = normalizeProfileQuotaFields({ ...user, creditsUsed: refreshed.used, creditsLimit: refreshed.limit });
+    localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(normalized));
+
+    return { allowed: true, status: refreshed };
+};
+
+export const applyPlanToCurrentUser = (plan: UserProfile['plan']) => {
+    const user = getUserProfile();
+    if (!user) return null;
+
+    const updatedUser = normalizeProfileQuotaFields({
+        ...user,
+        plan,
+        status: 'active',
+    });
+
+    const usageMap = getQueryUsageMap();
+    usageMap[user.id] = {
+        windowStart: Date.now(),
+        used: 0,
+    };
+    saveQueryUsageMap(usageMap);
+
+    localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(updatedUser));
+    return updatedUser;
 };
 
 const replaceChatsForUser = (userId: string, sessions: ChatSession[]) => {
@@ -233,8 +389,8 @@ const USER_PROFILE: UserProfile = {
     company: 'Elevadores Brasil',
     email: 'carlos@tecnico.com',
     plan: 'Profissional',
-    creditsUsed: 45,
-    creditsLimit: 500, // Fixed limit for demo
+    creditsUsed: 0,
+    creditsLimit: 'Infinity',
     isAdmin: false,
     status: 'active',
     joinedAt: '2024-02-15',
@@ -246,8 +402,9 @@ const USER_PROFILE: UserProfile = {
 
 export const login = (type: 'admin' | 'user'): UserProfile => {
     const profile = type === 'admin' ? ADMIN_PROFILE : USER_PROFILE;
-    localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(profile));
-    return profile;
+    const normalized = normalizeProfileQuotaFields(profile);
+    localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(normalized));
+    return normalized;
 };
 
 export const signup = (data: Partial<UserProfile>): UserProfile => {
@@ -265,14 +422,15 @@ export const signup = (data: Partial<UserProfile>): UserProfile => {
         nextBillingDate: new Date().toISOString().split('T')[0],
         tokenUsage: { currentMonth: 0, lastMonth: 0, history: [] }
     };
-    localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(newProfile));
-    return newProfile;
+    const normalized = normalizeProfileQuotaFields(newProfile);
+    localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(normalized));
+    return normalized;
 };
 
 export const updateUserProfile = (updates: Partial<UserProfile>) => {
     const user = getUserProfile();
     if (user) {
-        const updated = { ...user, ...updates };
+        const updated = normalizeProfileQuotaFields({ ...user, ...updates });
         localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(updated));
         return updated;
     }
@@ -285,7 +443,15 @@ export const logout = () => {
 
 export const getUserProfile = (): UserProfile | null => {
     const stored = localStorage.getItem(CURRENT_USER_KEY);
-    return stored ? JSON.parse(stored) : null;
+    if (!stored) return null;
+    try {
+        const parsed = JSON.parse(stored) as UserProfile;
+        const normalized = normalizeProfileQuotaFields(parsed);
+        localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(normalized));
+        return normalized;
+    } catch {
+        return null;
+    }
 };
 
 // --- DATA ---
@@ -482,14 +648,16 @@ const setAgentsCache = (agents: Agent[]) => {
 };
 
 export const syncAgentsFromDatabase = async (): Promise<Agent[]> => {
+    const now = Date.now();
+    if (agentsSyncPromise) return agentsSyncPromise;
+    if ((now - lastAgentsSyncAt) < AGENTS_SYNC_MIN_INTERVAL_MS && runtimeAgents.length > 0) {
+        return runtimeAgents;
+    }
+
+    agentsSyncPromise = (async () => {
     try {
         clearLegacyAgentLocalData();
         const user = getUserProfile();
-
-        await supabase
-            .from('agents')
-            .delete()
-            .in('id', Array.from(REMOVED_AGENT_IDS));
 
         const { data, error } = await supabase
             .from('agents')
@@ -502,27 +670,22 @@ export const syncAgentsFromDatabase = async (): Promise<Agent[]> => {
 
         const allAgents = (data as SupabaseAgentRow[]).map(mapSupabaseAgentToApp);
 
-        const blockedAgents = allAgents.filter(a => isBlockedLegacyAgent(a));
-        if (blockedAgents.length > 0) {
-            const blockedIds = blockedAgents.map(a => a.id).filter(Boolean);
-            if (blockedIds.length > 0) {
-                await supabase
-                    .from('agents')
-                    .delete()
-                    .in('id', blockedIds);
-            }
-        }
-
         // Padrão + custom do usuário logado
         const filtered = allAgents.filter(a => {
             if (isBlockedLegacyAgent(a)) return false;
             return !a.isCustom || (user && a.createdBy === user.id);
         });
         setAgentsCache(filtered);
+        lastAgentsSyncAt = Date.now();
         return filtered;
     } catch {
         return runtimeAgents;
+    } finally {
+        agentsSyncPromise = null;
     }
+    })();
+
+    return agentsSyncPromise;
 };
 
 export const saveAgentToDatabase = async (agent: Agent): Promise<Agent> => {

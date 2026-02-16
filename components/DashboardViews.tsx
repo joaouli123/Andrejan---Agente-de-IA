@@ -67,7 +67,7 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent, onSelect }) => {
 
 // --- AGENTS GRID ---
 export const AgentsGrid: React.FC<{ user: UserProfile, onSelectAgent: (id: string) => void }> = ({ user, onSelectAgent }) => {
-  const [agents, setAgents] = useState<Agent[]>([]);
+  const [agents, setAgents] = useState<Agent[]>(Storage.getAgents());
 
   useEffect(() => {
       const syncAgents = async () => {

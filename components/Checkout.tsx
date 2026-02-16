@@ -1,10 +1,11 @@
 ﻿import React, { useState } from 'react';
 import { ShieldCheck, Lock, CreditCard, ArrowLeft } from 'lucide-react';
 import { Plan } from './Pricing';
+import { createMercadoPagoPreference } from '../services/paymentApi';
+import * as Storage from '../services/storage';
 
 interface CheckoutProps {
   plan: Plan;
-  onSuccess: () => void;
   onBack: () => void;
   initialUserData?: {
     name: string;
@@ -12,23 +13,35 @@ interface CheckoutProps {
   };
 }
 
-const Checkout: React.FC<CheckoutProps> = ({ plan, onSuccess, onBack, initialUserData }) => {
+const Checkout: React.FC<CheckoutProps> = ({ plan, onBack, initialUserData }) => {
   const [loading, setLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
   const [formData, setFormData] = useState({
     name: initialUserData?.name || '',
     email: initialUserData?.email || '',
-    cardNumber: '',
-    expiryDate: '',
-    cvc: '',
   });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErrorMessage('');
     setLoading(true);
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    setLoading(false);
-    onSuccess();
+    try {
+      const currentUser = Storage.getUserProfile();
+      const pref = await createMercadoPagoPreference({
+        planId: plan.id,
+        payerName: formData.name,
+        payerEmail: formData.email,
+        userId: currentUser?.id,
+      });
+
+      const checkoutUrl = pref.initPoint || pref.sandboxInitPoint;
+      if (!checkoutUrl) throw new Error('URL de checkout não retornada pelo Mercado Pago');
+
+      window.location.href = checkoutUrl;
+    } catch (error: any) {
+      setErrorMessage(error?.message || 'Não foi possível iniciar o pagamento agora.');
+      setLoading(false);
+    }
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -130,77 +143,27 @@ const Checkout: React.FC<CheckoutProps> = ({ plan, onSuccess, onBack, initialUse
                   </div>
 
                   <div className='border-t border-slate-200 pt-6'>
-                    <h3 className='text-lg font-medium text-slate-900 mb-4'>Dados do Cartão</h3>
-                    <div className='grid grid-cols-1 gap-6'>
-                      <div>
-                        <label htmlFor='cardNumber' className='block text-sm font-medium text-slate-700'>
-                          Número do cartão
-                        </label>
-                        <div className='mt-1 relative rounded-md shadow-sm'>
-                          <div className='absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none'>
-                            <CreditCard className='h-5 w-5 text-slate-400' aria-hidden='true' />
-                          </div>
-                          <input
-                            type='text'
-                            name='cardNumber'
-                            id='cardNumber'
-                            required
-                            value={formData.cardNumber}
-                            onChange={handleChange}
-                            className='focus:ring-blue-500 focus:border-blue-500 block w-full pl-10 sm:text-sm border-slate-300 rounded-md p-3 border'
-                            placeholder='0000 0000 0000 0000'
-                          />
-                        </div>
-                      </div>
-
-                      <div className='grid grid-cols-2 gap-6'>
-                        <div>
-                          <label htmlFor='expiryDate' className='block text-sm font-medium text-slate-700'>
-                            Validade
-                          </label>
-                          <div className='mt-1'>
-                            <input
-                              type='text'
-                              name='expiryDate'
-                              id='expiryDate'
-                              required
-                              value={formData.expiryDate}
-                              onChange={handleChange}
-                              className='focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-slate-300 rounded-md p-3 border'
-                              placeholder='MM/AA'
-                            />
-                          </div>
-                        </div>
-
-                        <div>
-                          <label htmlFor='cvc' className='block text-sm font-medium text-slate-700'>
-                            CVC
-                          </label>
-                          <div className='mt-1'>
-                            <input
-                              type='text'
-                              name='cvc'
-                              id='cvc'
-                              required
-                              value={formData.cvc}
-                              onChange={handleChange}
-                              className='focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-slate-300 rounded-md p-3 border'
-                              placeholder='123'
-                            />
-                          </div>
-                        </div>
-                      </div>
+                    <h3 className='text-lg font-medium text-slate-900 mb-2'>Pagamento</h3>
+                    <p className='text-sm text-slate-600'>Você será redirecionado para o checkout seguro do Mercado Pago para concluir a assinatura.</p>
+                    <div className='mt-4 flex items-center gap-2 text-sm text-slate-500'>
+                      <CreditCard className='h-4 w-4' />
+                      Cartão, PIX e outros métodos disponíveis no checkout.
                     </div>
                   </div>
                 </div>
                 
                 <div className='px-6 py-4 bg-slate-50 border-t border-slate-200'>
+                  {errorMessage && (
+                    <div className='mb-3 rounded-md bg-red-50 border border-red-200 p-3 text-sm text-red-700'>
+                      {errorMessage}
+                    </div>
+                  )}
                   <button
                     type='submit'
                     disabled={loading}
                     className='w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed'
                   >
-                    {loading ? 'Processando...' : 'Pagar R$'}
+                    {loading ? 'Redirecionando...' : 'Pagar com Mercado Pago'}
                   </button>
                 </div>
               </div>

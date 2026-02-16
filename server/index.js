@@ -25,6 +25,15 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3002;
 const PDF_DIR = process.env.PDF_PATH || path.join(__dirname, 'data', 'pdfs');
+const FRONTEND_BASE_URL = (process.env.FRONTEND_BASE_URL || 'https://elevex.uxcodedev.com.br').replace(/\/+$/, '');
+const MP_ACCESS_TOKEN = (process.env.MERCADO_PAGO_ACCESS_TOKEN || '').trim();
+
+const SUBSCRIPTION_PLANS = {
+  free: { id: 'free', title: 'Plano Free', price: 0, planName: 'Free' },
+  iniciante: { id: 'iniciante', title: 'Plano Iniciante', price: 9.99, planName: 'Iniciante' },
+  profissional: { id: 'profissional', title: 'Plano Profissional', price: 19.99, planName: 'Profissional' },
+  empresa: { id: 'empresa', title: 'Plano Empresa', price: 99.99, planName: 'Empresa' },
+};
 
 function listPdfFilesRecursive(dir) {
   const results = [];
@@ -157,6 +166,119 @@ app.get('/api/stats', authMiddleware, async (req, res) => {
     res.json(stats);
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Cria preferência de checkout Mercado Pago
+ */
+app.post('/api/payments/create-preference', authMiddleware, async (req, res) => {
+  try {
+    if (!MP_ACCESS_TOKEN) {
+      return res.status(500).json({ error: 'Mercado Pago não configurado no servidor' });
+    }
+
+    const { planId, payerName, payerEmail, userId } = req.body || {};
+    const normalizedPlanId = String(planId || '').toLowerCase();
+    const plan = SUBSCRIPTION_PLANS[normalizedPlanId];
+
+    if (!plan || !plan.price) {
+      return res.status(400).json({ error: 'Plano inválido para checkout' });
+    }
+
+    if (!payerName || !payerEmail) {
+      return res.status(400).json({ error: 'Nome e email do pagador são obrigatórios' });
+    }
+
+    const externalReference = `${String(userId || 'anon')}|${plan.id}|${Date.now()}`;
+    const payload = {
+      items: [
+        {
+          id: plan.id,
+          title: plan.title,
+          quantity: 1,
+          unit_price: Number(plan.price),
+          currency_id: 'BRL',
+        },
+      ],
+      payer: {
+        name: String(payerName).slice(0, 120),
+        email: String(payerEmail).slice(0, 180),
+      },
+      external_reference: externalReference,
+      back_urls: {
+        success: `${FRONTEND_BASE_URL}/?payment_status=approved`,
+        pending: `${FRONTEND_BASE_URL}/?payment_status=pending`,
+        failure: `${FRONTEND_BASE_URL}/?payment_status=rejected`,
+      },
+      auto_return: 'approved',
+      metadata: {
+        plan_id: plan.id,
+        plan_name: plan.planName,
+        user_id: String(userId || ''),
+      },
+    };
+
+    const response = await fetch('https://api.mercadopago.com/checkout/preferences', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return res.status(502).json({ error: data?.message || data?.error || 'Falha ao criar checkout no Mercado Pago' });
+    }
+
+    return res.json({
+      preferenceId: data.id,
+      initPoint: data.init_point,
+      sandboxInitPoint: data.sandbox_init_point,
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || 'Erro ao criar preferência de pagamento' });
+  }
+});
+
+/**
+ * Verifica status de pagamento no Mercado Pago
+ */
+app.get('/api/payments/verify', authMiddleware, async (req, res) => {
+  try {
+    if (!MP_ACCESS_TOKEN) {
+      return res.status(500).json({ error: 'Mercado Pago não configurado no servidor' });
+    }
+
+    const paymentId = String(req.query.paymentId || '').trim();
+    if (!paymentId) {
+      return res.status(400).json({ error: 'paymentId é obrigatório' });
+    }
+
+    const response = await fetch(`https://api.mercadopago.com/v1/payments/${encodeURIComponent(paymentId)}`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
+      },
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return res.status(502).json({ error: data?.message || data?.error || 'Falha ao verificar pagamento' });
+    }
+
+    const status = String(data?.status || '').toLowerCase();
+    const normalizedStatus = status === 'approved' ? 'approved' : status === 'pending' || status === 'in_process' ? 'pending' : 'rejected';
+
+    return res.json({
+      status: normalizedStatus,
+      paymentId,
+      externalReference: data?.external_reference || null,
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || 'Erro ao verificar pagamento' });
   }
 });
 

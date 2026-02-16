@@ -40,6 +40,7 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
 
   // Header Menu State
   const [isHeaderMenuOpen, setIsHeaderMenuOpen] = useState(false);
+  const [quotaStatus, setQuotaStatus] = useState(Storage.getUserQueryQuotaStatus());
 
   // Load session on sessionId change
   useEffect(() => {
@@ -56,6 +57,25 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
     setIsHeaderMenuOpen(false); // Close menu on session change
   }, [sessionId, allSessions]); 
 
+  useEffect(() => {
+    const refreshQuota = () => setQuotaStatus(Storage.getUserQueryQuotaStatus());
+    refreshQuota();
+    const timer = window.setInterval(refreshQuota, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const formatCountdown = (ms: number): string => {
+    const safeMs = Math.max(0, ms);
+    const totalSeconds = Math.ceil(safeMs / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    if (hours > 0) {
+      return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    }
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  };
+
   // Scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -63,6 +83,29 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
 
   const handleSend = async () => {
     if (!input.trim() || !session) return;
+
+    const consumption = Storage.consumeUserQueryCredit();
+    setQuotaStatus(consumption.status);
+    if (!consumption.allowed) {
+      const blockedMessage: Message = {
+        id: (Date.now() + 999).toString(),
+        role: 'model',
+        text: `Seu limite de consultas do plano ${consumption.status.plan} acabou nas últimas 24h. Nova consulta disponível em ${formatCountdown(consumption.status.msUntilReset)}.`,
+        timestamp: new Date().toISOString()
+      };
+
+      const blockedSession = {
+        ...session,
+        messages: [...session.messages, blockedMessage],
+        lastMessageAt: new Date().toISOString(),
+        preview: blockedMessage.text.substring(0, 90)
+      };
+
+      setSession(blockedSession);
+      Storage.saveSession(blockedSession);
+      onSessionUpdate();
+      return;
+    }
 
     const agent = agents.find(a => a.id === session.agentId) || agents[0];
 
@@ -115,6 +158,7 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
 
     setSession(finalSession);
     Storage.saveSession(finalSession);
+    setQuotaStatus(Storage.getUserQueryQuotaStatus());
     onSessionUpdate();
     setIsLoading(false);
   };
@@ -442,6 +486,16 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
 
         {/* Input */}
         <div className="bg-white/80 backdrop-blur border-t border-slate-200 p-3 sm:p-4 md:p-6 shadow-lg z-20">
+            {quotaStatus.isBlocked && (
+              <div className="max-w-4xl mx-auto mb-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-amber-800 text-xs sm:text-sm font-medium">
+                Limite de consultas do plano {quotaStatus.plan} atingido. Nova consulta em <span className="font-bold">{formatCountdown(quotaStatus.msUntilReset)}</span>.
+              </div>
+            )}
+            {!quotaStatus.isBlocked && quotaStatus.limit !== 'Infinity' && (
+              <div className="max-w-4xl mx-auto mb-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2 text-slate-600 text-xs sm:text-sm">
+                Consultas disponíveis nas próximas 24h: <span className="font-semibold">{quotaStatus.remaining}</span> de <span className="font-semibold">{quotaStatus.limit}</span>.
+              </div>
+            )}
             <div className="max-w-4xl mx-auto relative flex items-center">
             <div className="flex-1 relative group">
                 <input
@@ -451,14 +505,14 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
                 onKeyDown={handleKeyPress}
                 placeholder={`Descreva a falha ou código de erro...`}
                 className="w-full bg-slate-50 text-slate-900 placeholder-slate-400 border border-slate-300 rounded-xl py-3 sm:py-4 pl-4 sm:pl-5 pr-12 sm:pr-14 focus:ring-2 focus:ring-voltz-accent/30 focus:border-voltz-accent focus:bg-white transition-all shadow-inner text-sm sm:text-base"
-                disabled={isLoading}
+                disabled={isLoading || quotaStatus.isBlocked}
                 autoFocus
                 />
                 <button
                 onClick={handleSend}
-                disabled={!input.trim() || isLoading}
+                disabled={!input.trim() || isLoading || quotaStatus.isBlocked}
                 className={`absolute right-2 top-2 bottom-2 aspect-square rounded-lg flex items-center justify-center transition-all duration-300 ${
-                    !input.trim() || isLoading
+                  !input.trim() || isLoading || quotaStatus.isBlocked
                     ? 'bg-transparent text-slate-300 cursor-not-allowed'
                     : 'bg-voltz-accent text-white hover:bg-cyan-600 shadow-md transform hover:scale-105'
                 }`}

@@ -103,7 +103,13 @@ const Pricing: React.FC<PricingProps> = ({ onSelectPlan }) => {
                 onClick={() => onSelectPlan(plan)}
                 className='w-full py-3 px-4 rounded-lg font-bold transition-colors'
               >
-                {plan.price === 0 ? 'Começar Grátis' : 'Assinar'}
+                {plan.id === 'free'
+                  ? 'Começar Grátis'
+                  : plan.id === 'iniciante'
+                    ? 'Assinar Iniciante'
+                    : plan.id === 'profissional'
+                      ? 'Assinar Profissional'
+                      : 'Assinar Empresa'}
               </button>
             </div>
           ))}

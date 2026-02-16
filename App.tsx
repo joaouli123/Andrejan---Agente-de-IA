@@ -12,6 +12,7 @@ import Register from './components/Register';
 import Checkout from './components/Checkout';
 import PaymentConfirmation from './components/PaymentConfirmation';
 import * as Storage from './services/storage';
+import { verifyMercadoPagoPayment } from './services/paymentApi';
 
 type ViewState = 'landing' | 'login' | 'register' | 'app' | 'checkout' | 'confirmation';
 
@@ -19,10 +20,47 @@ const App: React.FC = () => {
   const [view, setView] = useState<ViewState>('login');
   const [selectedPlan, setSelectedPlan] = useState<Plan | null>(null);
   const [registrationData, setRegistrationData] = useState<any>(null);
+  const [paymentStatus, setPaymentStatus] = useState<'approved' | 'pending' | 'rejected'>('pending');
+  const [paymentId, setPaymentId] = useState<string | undefined>(undefined);
   // paymentData is not really used except for confirmation, but we can keep it simple
 
   // Check if user is already logged in on mount
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const statusParam = (params.get('payment_status') || params.get('status') || '').toLowerCase();
+    const paymentIdParam = params.get('payment_id') || params.get('collection_id') || undefined;
+
+    if (statusParam) {
+      const normalizedStatus: 'approved' | 'pending' | 'rejected' =
+        statusParam === 'approved' ? 'approved' : statusParam === 'pending' ? 'pending' : 'rejected';
+
+      const processPaymentReturn = async () => {
+        let finalStatus = normalizedStatus;
+        if (paymentIdParam) {
+          try {
+            const verification = await verifyMercadoPagoPayment(paymentIdParam);
+            finalStatus = verification.status;
+          } catch {}
+        }
+
+        setPaymentStatus(finalStatus);
+        setPaymentId(paymentIdParam);
+
+        const user = Storage.getUserProfile();
+        if (finalStatus === 'approved' && user) {
+          Storage.applyPlanToCurrentUser(user.plan);
+        }
+
+        setView('confirmation');
+
+        const cleanUrl = `${window.location.origin}${window.location.pathname}`;
+        window.history.replaceState({}, document.title, cleanUrl);
+      };
+
+      void processPaymentReturn();
+      return;
+    }
+
     const user = Storage.getUserProfile();
     if (user) {
       if (user.status === 'pending_payment') {
@@ -82,24 +120,25 @@ const App: React.FC = () => {
 
   const handleRegisterSuccess = (data: any) => {
     setRegistrationData(data);
-    // Create account immediately as pending
+    // Create account immediately
     if (selectedPlan) {
+        const isFreePlan = selectedPlan.id === 'free' || selectedPlan.price === 0;
         Storage.signup({
             name: data.name,
             email: data.email,
             password: data.password,
             plan: selectedPlan.name,
-            status: 'pending_payment'
+            status: isFreePlan ? 'active' : 'pending_payment'
         });
+
+        if (isFreePlan) {
+          Storage.applyPlanToCurrentUser('Free');
+          setView('app');
+          window.scrollTo(0, 0);
+          return;
+        }
     }
     setView('checkout');
-    window.scrollTo(0, 0);
-  };
-
-  const handlePaymentSuccess = () => {
-    // Update user status to active
-    Storage.updateUserProfile({ status: 'active' });
-    setView('confirmation');
     window.scrollTo(0, 0);
   };
 
@@ -152,7 +191,6 @@ const App: React.FC = () => {
       {view === 'checkout' && selectedPlan && (
         <Checkout
           plan={selectedPlan}
-          onSuccess={handlePaymentSuccess}
           onBack={() => setView('login')}
           initialUserData={registrationData}
         />
@@ -160,9 +198,10 @@ const App: React.FC = () => {
 
       {view === 'confirmation' && (
         <PaymentConfirmation
-          orderId={'PED-' + Math.random().toString(36).substr(2, 9).toUpperCase()}
-          amount={selectedPlan?.price || 0}
-          onContinue={navigateToApp}
+          status={paymentStatus}
+          transactionId={paymentId}
+          email={registrationData?.email || Storage.getUserProfile()?.email}
+          onDashboard={navigateToApp}
         />
       )}
 
