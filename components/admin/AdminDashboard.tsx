@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../../services/supabase';
-import { RAG_SERVER_URL, ragHeaders } from '../../services/ragApi';
+import { RAG_SERVER_URL, ragHeaders, ragUrl } from '../../services/ragApi';
 import { Brand, Model, SourceFile } from '../../types';
 import { 
   Plus, Trash2, Edit2, Check, X, ChevronDown, ChevronRight, 
@@ -179,13 +179,16 @@ export default function AdminDashboard() {
     let attempts = 0;
     while (attempts < maxAttempts) {
       try {
-        const res = await fetch(`${RAG_SERVER_URL}/api/upload/status/${taskId}`, {
+        const url = ragUrl(`/api/upload/status/${taskId}`);
+        const res = await fetch(url, {
           headers: { ...ragHeaders(true) }
         });
         const task = await res.json();
         if (task.status === 'done' || task.status === 'error' || task.status === 'not_found') return task;
         onProgress(task);
-      } catch (e) { /* retry */ }
+      } catch (e) {
+        console.warn(`[Upload] Erro ao verificar status do task ${taskId}:`, e);
+      }
       attempts++;
       await new Promise(r => setTimeout(r, 1000));
     }
@@ -201,18 +204,23 @@ export default function AdminDashboard() {
     
     // 1. Verificar no servidor (vector store + disco)
     try {
-      const res = await fetch(`${RAG_SERVER_URL}/api/check-duplicates`, {
+      const url = ragUrl('/api/check-duplicates');
+      console.log('[Upload] Verificando duplicatas em:', url);
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...ragHeaders(true) },
         body: JSON.stringify({ fileNames: files.map(f => f.name) })
       });
       if (res.ok) {
         const data = await res.json();
+        console.log('[Upload] Resultado duplicatas:', data);
         (data.duplicates || []).forEach((d: string) => dupes.add(d));
         serverCheckOk = true;
+      } else {
+        console.warn('[Upload] check-duplicates retornou:', res.status);
       }
     } catch (err) {
-      console.warn('Erro ao verificar duplicatas no servidor:', err);
+      console.warn('[Upload] Erro ao verificar duplicatas no servidor:', err);
     }
     
     // 2. Fallback: só verifica no Supabase se o servidor estiver indisponível
@@ -239,19 +247,21 @@ export default function AdminDashboard() {
     setCheckingDuplicates(false);
   }
 
-  async function handleUpload() {
+  async function handleUpload(forceAll = false) {
     if (!uploadTarget || filesToUpload.length === 0) return;
+    console.log('[Upload] Iniciando upload...', { target: uploadTarget, files: filesToUpload.map(f => f.name), forceAll });
     setUploading(true);
 
-    // Filter out duplicates
-    const filesToProcess = filesToUpload.filter(f => !duplicateFiles.has(f.name));
+    // Filter out duplicates (unless force)
+    const filesToProcess = forceAll ? filesToUpload : filesToUpload.filter(f => !duplicateFiles.has(f.name));
     if (filesToProcess.length === 0) {
+      console.warn('[Upload] Nenhum arquivo para processar (todos duplicados)');
       setUploading(false);
       return;
     }
 
     const statuses: UploadStatus[] = filesToUpload.map(f => {
-      if (duplicateFiles.has(f.name)) {
+      if (!forceAll && duplicateFiles.has(f.name)) {
         return { fileName: f.name, status: 'done' as const, message: '⏭️ Já indexado, ignorado' };
       }
       return { fileName: f.name, status: 'waiting' as const };
@@ -260,8 +270,8 @@ export default function AdminDashboard() {
 
     for (let i = 0; i < filesToUpload.length; i++) {
       const file = filesToUpload[i];
-      // Skip duplicates
-      if (duplicateFiles.has(file.name)) continue;
+      // Skip duplicates (unless force)
+      if (!forceAll && duplicateFiles.has(file.name)) continue;
       try {
         updateFileStatus(i, { status: 'uploading', message: 'Enviando arquivo...' });
 
@@ -273,13 +283,26 @@ export default function AdminDashboard() {
           formData.append('brandName', brand.name);
         }
 
-        const res = await fetch(`${RAG_SERVER_URL}/api/upload`, { 
-          method: 'POST', 
-          headers: { ...ragHeaders(true) },
-          body: formData 
-        });
+        const uploadUrl = ragUrl('/api/upload');
+        console.log(`[Upload] Enviando ${file.name} para: ${uploadUrl}`);
+        
+        let res: Response;
+        try {
+          res = await fetch(uploadUrl, { 
+            method: 'POST', 
+            headers: { ...ragHeaders(true) },
+            body: formData 
+          });
+        } catch (networkError: any) {
+          console.error('[Upload] Erro de rede:', networkError);
+          updateFileStatus(i, { status: 'error', message: `Erro de conexão: ${networkError.message}. Verifique se o servidor está online.` });
+          continue;
+        }
+        
         if (!res.ok) {
-          updateFileStatus(i, { status: 'error', message: `Erro: ${await res.text()}` });
+          const errText = await res.text();
+          console.error(`[Upload] Servidor retornou ${res.status}:`, errText);
+          updateFileStatus(i, { status: 'error', message: `Erro ${res.status}: ${errText}` });
           continue;
         }
 
@@ -336,7 +359,8 @@ export default function AdminDashboard() {
           message: `${result.pages || '?'} páginas → ${result.chunks || '?'} chunks indexados` 
         });
       } catch (err: any) {
-        updateFileStatus(i, { status: 'error', message: err.message });
+        console.error(`[Upload] Erro geral no arquivo ${file.name}:`, err);
+        updateFileStatus(i, { status: 'error', message: err.message || 'Erro desconhecido' });
       }
     }
 
@@ -347,6 +371,37 @@ export default function AdminDashboard() {
       setUploadTarget(null);
       setUploadStatuses([]);
     }, 5000);
+  }
+
+  // ======================== SYNC BASE ========================
+
+  async function syncBase() {
+    try {
+      const res = await fetch(ragUrl('/api/stats'));
+      const stats = await res.json();
+      if (stats.totalDocuments === 0) {
+        // Qdrant está vazio — limpar source_files stale
+        const { data: staleFiles } = await supabase
+          .from('source_files')
+          .select('id')
+          .eq('status', 'indexed');
+        if (staleFiles && staleFiles.length > 0) {
+          await supabase
+            .from('source_files')
+            .delete()
+            .eq('status', 'indexed');
+          alert(`🧹 ${staleFiles.length} registros antigos limpos! Agora você pode re-enviar os PDFs.`);
+          fetchAll();
+        } else {
+          alert('✅ Base já está sincronizada.');
+        }
+      } else {
+        alert(`✅ Base de vetores tem ${stats.totalDocuments} documentos indexados.`);
+      }
+    } catch (err) {
+      console.error('[Sync] Erro:', err);
+      alert('❌ Erro ao verificar base. Tente novamente.');
+    }
   }
 
   // ======================== FILE LIST COMPONENT ========================
@@ -436,7 +491,7 @@ export default function AdminDashboard() {
               )}
 
               <button
-                onClick={handleUpload}
+                onClick={() => handleUpload(false)}
                 disabled={filesToUpload.length === 0 || checkingDuplicates || filesToUpload.every(f => duplicateFiles.has(f.name))}
                 className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
               >
@@ -447,6 +502,17 @@ export default function AdminDashboard() {
                    : `Fazer Upload ${filesToUpload.length > 0 ? `(${filesToUpload.length})` : ''}`
                 }
               </button>
+
+              {/* Force upload button when duplicates block everything */}
+              {duplicateFiles.size > 0 && filesToUpload.every(f => duplicateFiles.has(f.name)) && (
+                <button
+                  onClick={() => handleUpload(true)}
+                  className="w-full mt-2 bg-amber-500 text-white py-2.5 rounded-xl font-semibold hover:bg-amber-600 transition-all flex items-center justify-center gap-2 text-sm"
+                >
+                  <RefreshCw size={16} />
+                  Forçar Re-upload ({filesToUpload.length} arquivo{filesToUpload.length !== 1 ? 's' : ''})
+                </button>
+              )}
             </>
           )}
 
@@ -516,6 +582,12 @@ export default function AdminDashboard() {
             Marcas, Modelos & Manuais
           </h1>
           <p className="text-slate-500 mt-1 sm:mt-2 text-sm">Gerencie tudo em um só lugar: marcas de elevadores, seus modelos e documentação técnica.</p>
+          <button 
+            onClick={syncBase}
+            className="mt-2 text-xs text-slate-500 hover:text-blue-600 hover:bg-blue-50 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
+          >
+            <RefreshCw size={14} /> Sincronizar Base
+          </button>
         </div>
 
         {/* Add Brand */}

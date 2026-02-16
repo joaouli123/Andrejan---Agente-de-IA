@@ -4,8 +4,15 @@
  */
 
 // Em produção (mesmo servidor), usa URL vazia = fetch relativo (/api/...)
-// Em dev local, Vite define como 'http://localhost:3002'
-export const RAG_SERVER_URL = process.env.RAG_SERVER_URL;
+// Em dev local, Vite proxy redireciona para servidor de produção
+export const RAG_SERVER_URL = process.env.RAG_SERVER_URL || '';
+
+/**
+ * Build full API URL - handles empty RAG_SERVER_URL (relative paths)
+ */
+export function ragUrl(path: string): string {
+  return `${RAG_SERVER_URL}${path}`;
+}
 
 const RAG_API_KEY = process.env.RAG_API_KEY || '';
 const RAG_ADMIN_KEY = process.env.RAG_ADMIN_KEY || '';

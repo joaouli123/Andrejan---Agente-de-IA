@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../services/supabase';
-import { RAG_SERVER_URL, ragHeaders } from '../../services/ragApi';
+import { RAG_SERVER_URL, ragHeaders, ragUrl } from '../../services/ragApi';
 import { Brand, Model, SourceFile } from '../../types';
 import { Upload, FileText, Trash2, ExternalLink, RefreshCw, CheckCircle, XCircle, Loader2 } from 'lucide-react';
 
@@ -92,7 +92,7 @@ export default function FileManager() {
     
     // 1. Verificar no servidor (vector store + disco)
     try {
-      const res = await fetch(`${RAG_SERVER_URL}/api/check-duplicates`, {
+      const res = await fetch(ragUrl('/api/check-duplicates'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...ragHeaders(true) },
         body: JSON.stringify({ fileNames: files.map(f => f.name) })
@@ -172,7 +172,7 @@ export default function FileManager() {
 
         let uploadResponse;
         try {
-          uploadResponse = await fetch(`${RAG_SERVER_URL}/api/upload`, {
+          uploadResponse = await fetch(ragUrl('/api/upload'), {
             method: 'POST',
             headers: { ...ragHeaders(true) },
             body: formData
@@ -293,7 +293,7 @@ export default function FileManager() {
     
     while (attempts < maxAttempts) {
       try {
-        const res = await fetch(`${RAG_SERVER_URL}/api/upload/status/${taskId}`, {
+        const res = await fetch(ragUrl(`/api/upload/status/${taskId}`), {
           headers: { ...ragHeaders(true) }
         });
         const task = await res.json();
