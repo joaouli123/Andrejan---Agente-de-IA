@@ -16,6 +16,7 @@ export default defineConfig(({ mode }) => {
         'process.env.RAG_SERVER_URL': JSON.stringify(env.RAG_SERVER_URL || (mode === 'production' ? '' : 'http://localhost:3002')),
         'process.env.RAG_API_KEY': JSON.stringify(env.RAG_API_KEY || ''),
         'process.env.RAG_ADMIN_KEY': JSON.stringify(env.RAG_ADMIN_KEY || ''),
+        'process.env.MP_PUBLIC_KEY': JSON.stringify(env.MP_PUBLIC_KEY || env.MERCADO_PAGO_PUBLIC_KEY || ''),
       },
       resolve: {
         alias: {

@@ -460,6 +460,208 @@ app.get('/api/payments/verify', async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════
+// ═══  CHECKOUT TRANSPARENTE — Pagamento inline (sem redirect) ═══
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Processar pagamento com cartão (Checkout Transparente)
+ * Recebe token do cartão (criado pelo SDK JS no frontend) e cria o pagamento.
+ */
+app.post('/api/payments/process-card', async (req, res) => {
+  try {
+    if (!MP_ACCESS_TOKEN) {
+      return res.status(500).json({ error: 'Mercado Pago não configurado no servidor' });
+    }
+
+    const { token, payment_method_id, installments, transaction_amount, description, payer, planId, userId } = req.body;
+
+    if (!token || !payment_method_id || !transaction_amount || !payer?.email) {
+      return res.status(400).json({ error: 'Dados do pagamento incompletos (token, payment_method_id, amount, email)' });
+    }
+
+    const normalizedPlanId = String(planId || '').toLowerCase();
+    const plan = SUBSCRIPTION_PLANS[normalizedPlanId];
+    const externalReference = `${String(userId || 'anon')}|${normalizedPlanId}|${Date.now()}`;
+
+    const payload = {
+      transaction_amount: Number(transaction_amount),
+      token,
+      description: description || `Assinatura ${plan?.planName || normalizedPlanId} — Elevex`,
+      installments: Number(installments) || 1,
+      payment_method_id,
+      statement_descriptor: 'ELEVEX',
+      external_reference: externalReference,
+      payer: {
+        email: String(payer.email).trim(),
+        first_name: String(payer.first_name || '').slice(0, 120),
+        last_name: String(payer.last_name || '').slice(0, 120),
+        identification: payer.identification || undefined,
+      },
+      metadata: {
+        plan_id: normalizedPlanId,
+        plan_name: plan?.planName || '',
+        user_id: String(userId || ''),
+      },
+    };
+
+    console.log(`[MP] Checkout Transparente - Cartão: plan=${normalizedPlanId}, email=${payer.email}`);
+
+    const response = await fetch('https://api.mercadopago.com/v1/payments', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
+        'X-Idempotency-Key': `card-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      console.error(`[MP] Erro ao processar cartão (HTTP ${response.status}):`, JSON.stringify(data));
+      const mpError = data?.message || data?.cause?.[0]?.description || 'Falha ao processar pagamento';
+      return res.status(402).json({
+        error: mpError,
+        status: data?.status || 'rejected',
+        status_detail: data?.status_detail || 'cc_rejected_other_reason',
+      });
+    }
+
+    const status = String(data.status || '').toLowerCase();
+    const normalizedStatus = status === 'approved' ? 'approved' :
+                              status === 'pending' || status === 'in_process' ? 'pending' : 'rejected';
+
+    console.log(`[MP] Pagamento cartão: id=${data.id}, status=${normalizedStatus}, detail=${data.status_detail}`);
+
+    return res.json({
+      status: normalizedStatus,
+      paymentId: String(data.id),
+      statusDetail: data.status_detail || '',
+      externalReference: data.external_reference,
+    });
+  } catch (error) {
+    console.error('[MP] Exceção ao processar cartão:', error);
+    return res.status(500).json({ error: error.message || 'Erro interno ao processar cartão' });
+  }
+});
+
+/**
+ * Processar pagamento PIX (Checkout Transparente)
+ * Cria pagamento PIX e retorna QR Code para o comprador.
+ */
+app.post('/api/payments/process-pix', async (req, res) => {
+  try {
+    if (!MP_ACCESS_TOKEN) {
+      return res.status(500).json({ error: 'Mercado Pago não configurado no servidor' });
+    }
+
+    const { transaction_amount, description, payer, planId, userId } = req.body;
+
+    if (!transaction_amount || !payer?.email) {
+      return res.status(400).json({ error: 'Dados do pagamento incompletos (amount, email)' });
+    }
+
+    const normalizedPlanId = String(planId || '').toLowerCase();
+    const plan = SUBSCRIPTION_PLANS[normalizedPlanId];
+    const externalReference = `${String(userId || 'anon')}|${normalizedPlanId}|${Date.now()}`;
+
+    const payload = {
+      transaction_amount: Number(transaction_amount),
+      description: description || `Assinatura ${plan?.planName || normalizedPlanId} — Elevex`,
+      payment_method_id: 'pix',
+      statement_descriptor: 'ELEVEX',
+      external_reference: externalReference,
+      payer: {
+        email: String(payer.email).trim(),
+        first_name: String(payer.first_name || '').slice(0, 120),
+        last_name: String(payer.last_name || '').slice(0, 120),
+        identification: payer.identification || undefined,
+      },
+      metadata: {
+        plan_id: normalizedPlanId,
+        plan_name: plan?.planName || '',
+        user_id: String(userId || ''),
+      },
+    };
+
+    console.log(`[MP] Checkout Transparente - PIX: plan=${normalizedPlanId}, email=${payer.email}`);
+
+    const response = await fetch('https://api.mercadopago.com/v1/payments', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
+        'X-Idempotency-Key': `pix-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      console.error(`[MP] Erro ao processar PIX (HTTP ${response.status}):`, JSON.stringify(data));
+      const mpError = data?.message || data?.cause?.[0]?.description || 'Falha ao gerar PIX';
+      return res.status(502).json({ error: mpError });
+    }
+
+    const pixTxData = data.point_of_interaction?.transaction_data || {};
+
+    console.log(`[MP] PIX gerado: id=${data.id}, status=${data.status}`);
+
+    return res.json({
+      status: data.status,
+      paymentId: String(data.id),
+      qrCode: pixTxData.qr_code || '',
+      qrCodeBase64: pixTxData.qr_code_base64 || '',
+      ticketUrl: pixTxData.ticket_url || '',
+      expirationDate: data.date_of_expiration || '',
+      externalReference: data.external_reference,
+    });
+  } catch (error) {
+    console.error('[MP] Exceção ao processar PIX:', error);
+    return res.status(500).json({ error: error.message || 'Erro interno ao gerar PIX' });
+  }
+});
+
+/**
+ * Consultar parcelas disponíveis para um cartão (Checkout Transparente)
+ */
+app.get('/api/payments/installments', async (req, res) => {
+  try {
+    if (!MP_ACCESS_TOKEN) {
+      return res.status(500).json({ error: 'Mercado Pago não configurado' });
+    }
+
+    const { bin, amount } = req.query;
+    if (!bin || !amount) {
+      return res.status(400).json({ error: 'bin e amount são obrigatórios' });
+    }
+
+    const response = await fetch(
+      `https://api.mercadopago.com/v1/payment_methods/installments?bin=${encodeURIComponent(bin)}&amount=${encodeURIComponent(amount)}`,
+      { headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` } }
+    );
+
+    const data = await response.json().catch(() => []);
+    return res.json(data);
+  } catch (error) {
+    return res.status(500).json({ error: error.message || 'Erro ao buscar parcelas' });
+  }
+});
+
+/**
+ * Retorna a Public Key do MP para o frontend inicializar o SDK
+ */
+app.get('/api/payments/public-key', (req, res) => {
+  const publicKey = (process.env.MERCADO_PAGO_PUBLIC_KEY || '').trim();
+  if (!publicKey) {
+    return res.status(500).json({ error: 'MERCADO_PAGO_PUBLIC_KEY não configurada no servidor' });
+  }
+  return res.json({ publicKey });
+});
+
 /**
  * Telemetria recente do RAG (admin)
  */

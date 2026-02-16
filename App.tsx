@@ -232,6 +232,15 @@ const App: React.FC = () => {
         <Checkout
           plan={selectedPlan}
           onBack={() => navigateTo('landing')}
+          onPaymentComplete={(status, paymentId) => {
+            setPaymentStatus(status);
+            setPaymentId(paymentId);
+            if (status === 'approved') {
+              const user = Storage.getUserProfile();
+              if (user) Storage.applyPlanToCurrentUser(user.plan);
+            }
+            navigateTo('confirmation');
+          }}
           initialUserData={registrationData}
         />
       )}
