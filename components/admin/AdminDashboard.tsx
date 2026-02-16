@@ -49,6 +49,7 @@ export default function AdminDashboard() {
   const [uploadNow, setUploadNow] = useState(Date.now());
   const [checkingDuplicates, setCheckingDuplicates] = useState(false);
   const [duplicateFiles, setDuplicateFiles] = useState<Set<string>>(new Set());
+  const [serverStatus, setServerStatus] = useState<'checking' | 'online' | 'offline'>('checking');
   const progressScrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -56,6 +57,26 @@ export default function AdminDashboard() {
     const id = setInterval(() => setUploadNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [uploading, uploadStatuses.length]);
+
+  // Test server connection when upload modal opens
+  useEffect(() => {
+    if (!uploadTarget) return;
+    setServerStatus('checking');
+    const ctrl = new AbortController();
+    fetch(ragUrl('/api/health'), { headers: { ...ragHeaders() }, signal: ctrl.signal })
+      .then(r => r.json())
+      .then(d => {
+        console.log('[Upload] Server health:', d);
+        setServerStatus(d.status === 'ok' || d.status === 'loading' ? 'online' : 'offline');
+      })
+      .catch(err => {
+        if (err.name !== 'AbortError') {
+          console.error('[Upload] Server offline:', err);
+          setServerStatus('offline');
+        }
+      });
+    return () => ctrl.abort();
+  }, [uploadTarget]);
 
   // ======================== DATA LOADING ========================
 
@@ -308,14 +329,21 @@ export default function AdminDashboard() {
         
         let res: Response;
         try {
+          const uploadCtrl = new AbortController();
+          const uploadTimeout = setTimeout(() => uploadCtrl.abort(), 120_000); // 2min timeout for upload
           res = await fetch(uploadUrl, { 
             method: 'POST', 
             headers: { ...ragHeaders(true) },
-            body: formData 
+            body: formData,
+            signal: uploadCtrl.signal
           });
+          clearTimeout(uploadTimeout);
         } catch (networkError: any) {
           console.error('[Upload] Erro de rede:', networkError);
-          updateFileStatus(i, { status: 'error', message: `Erro de conexão: ${networkError.message}. Verifique se o servidor está online.` });
+          const msg = networkError.name === 'AbortError'
+            ? 'Upload expirou (>2min). O servidor pode estar sobrecarregado.'
+            : `Erro de conexão: ${networkError.message}. Verifique se o servidor está online.`;
+          updateFileStatus(i, { status: 'error', message: msg });
           continue;
         }
         
@@ -478,6 +506,27 @@ export default function AdminDashboard() {
             )}
           </div>
 
+          {/* Server status */}
+          {!uploading && uploadStatuses.length === 0 && (
+            <div className={`flex items-center gap-2 text-xs px-3 py-1.5 rounded-lg mb-3 ${
+              serverStatus === 'online' ? 'bg-green-50 text-green-700' :
+              serverStatus === 'offline' ? 'bg-red-50 text-red-700' :
+              'bg-slate-50 text-slate-500'
+            }`}>
+              <span className={`w-2 h-2 rounded-full ${
+                serverStatus === 'online' ? 'bg-green-500' :
+                serverStatus === 'offline' ? 'bg-red-500' :
+                'bg-slate-400 animate-pulse'
+              }`} />
+              {serverStatus === 'online' ? 'Servidor conectado' :
+               serverStatus === 'offline' ? 'Servidor offline — verifique se está rodando' :
+               'Verificando conexão...'}
+              {serverStatus === 'offline' && (
+                <button onClick={() => { setServerStatus('checking'); fetch(ragUrl('/api/health'), { headers: ragHeaders() }).then(r => r.json()).then(() => setServerStatus('online')).catch(() => setServerStatus('offline')); }} className="ml-auto underline font-medium">Tentar novamente</button>
+              )}
+            </div>
+          )}
+
           {/* Drop zone */}
           {!uploading && uploadStatuses.length === 0 && (
             <>
@@ -514,8 +563,12 @@ export default function AdminDashboard() {
 
               <button
                 onClick={() => handleUpload(false)}
-                disabled={filesToUpload.length === 0 || checkingDuplicates || filesToUpload.every(f => duplicateFiles.has(f.name))}
-                className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+                disabled={filesToUpload.length === 0 || checkingDuplicates || serverStatus === 'offline' || filesToUpload.every(f => duplicateFiles.has(f.name))}
+                className={`w-full py-3 rounded-xl font-bold transition-all flex items-center justify-center gap-2 ${
+                  filesToUpload.length === 0 || serverStatus === 'offline'
+                    ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                    : 'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed'
+                }`}
               >
                 <Upload size={18} />
                 {checkingDuplicates ? 'Verificando duplicados...' : 
