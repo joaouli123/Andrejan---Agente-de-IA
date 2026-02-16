@@ -3,15 +3,16 @@
  * Centralizes server URL and authentication for all RAG API calls
  */
 
-// Em produção (mesmo servidor), usa URL vazia = fetch relativo (/api/...)
-// Em dev local, Vite proxy redireciona para servidor de produção
-export const RAG_SERVER_URL = process.env.RAG_SERVER_URL || '';
+// Pode ser URL absoluta (ex.: http://localhost:3002 ou https://elevex...)
+// Se vazio, usa fetch relativo (/api/...) para funcionar com mesmo domínio/proxy
+export const RAG_SERVER_URL = (process.env.RAG_SERVER_URL || '').trim().replace(/\/+$/, '');
 
 /**
  * Build full API URL - handles empty RAG_SERVER_URL (relative paths)
  */
 export function ragUrl(path: string): string {
-  return `${RAG_SERVER_URL}${path}`;
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return `${RAG_SERVER_URL}${normalizedPath}`;
 }
 
 const RAG_API_KEY = process.env.RAG_API_KEY || '';
