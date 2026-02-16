@@ -170,12 +170,26 @@ app.get('/api/stats', authMiddleware, async (req, res) => {
 });
 
 /**
- * Cria preferência de checkout Mercado Pago
+ * Diagnóstico de configuração de pagamentos (público, sem auth)
  */
-app.post('/api/payments/create-preference', authMiddleware, async (req, res) => {
+app.get('/api/payments/config-check', (req, res) => {
+  res.json({
+    mercadoPagoConfigured: !!MP_ACCESS_TOKEN,
+    frontendBaseUrl: FRONTEND_BASE_URL,
+    plans: Object.keys(SUBSCRIPTION_PLANS),
+  });
+});
+
+/**
+ * Cria preferência de checkout Mercado Pago
+ * Não exige authMiddleware — o próprio endpoint valida apenas dados do pagador.
+ * Isso permite que novos usuários (sem API key no frontend) consigam pagar.
+ */
+app.post('/api/payments/create-preference', async (req, res) => {
   try {
     if (!MP_ACCESS_TOKEN) {
-      return res.status(500).json({ error: 'Mercado Pago não configurado no servidor' });
+      console.error('[MP] MERCADO_PAGO_ACCESS_TOKEN não configurado no .env do servidor');
+      return res.status(500).json({ error: 'Mercado Pago não configurado no servidor. Configure MERCADO_PAGO_ACCESS_TOKEN no .env.' });
     }
 
     const { planId, payerName, payerEmail, userId } = req.body || {};
@@ -183,7 +197,8 @@ app.post('/api/payments/create-preference', authMiddleware, async (req, res) => 
     const plan = SUBSCRIPTION_PLANS[normalizedPlanId];
 
     if (!plan || !plan.price) {
-      return res.status(400).json({ error: 'Plano inválido para checkout' });
+      console.warn(`[MP] Plano inválido recebido: "${planId}"`);
+      return res.status(400).json({ error: `Plano inválido: "${planId}". Planos válidos: ${Object.keys(SUBSCRIPTION_PLANS).filter(k => SUBSCRIPTION_PLANS[k].price > 0).join(', ')}` });
     }
 
     if (!payerName || !payerEmail) {
@@ -191,33 +206,39 @@ app.post('/api/payments/create-preference', authMiddleware, async (req, res) => 
     }
 
     const externalReference = `${String(userId || 'anon')}|${plan.id}|${Date.now()}`;
+
     const payload = {
       items: [
         {
           id: plan.id,
           title: plan.title,
+          description: `Assinatura mensal — ${plan.planName}`,
           quantity: 1,
           unit_price: Number(plan.price),
           currency_id: 'BRL',
         },
       ],
       payer: {
-        name: String(payerName).slice(0, 120),
-        email: String(payerEmail).slice(0, 180),
+        name: String(payerName).split(' ')[0].slice(0, 120),
+        surname: String(payerName).split(' ').slice(1).join(' ').slice(0, 120) || '',
+        email: String(payerEmail).trim().slice(0, 180),
       },
       external_reference: externalReference,
       back_urls: {
-        success: `${FRONTEND_BASE_URL}/?payment_status=approved`,
-        pending: `${FRONTEND_BASE_URL}/?payment_status=pending`,
-        failure: `${FRONTEND_BASE_URL}/?payment_status=rejected`,
+        success: `${FRONTEND_BASE_URL}/confirmacao?payment_status=approved`,
+        pending: `${FRONTEND_BASE_URL}/confirmacao?payment_status=pending`,
+        failure: `${FRONTEND_BASE_URL}/confirmacao?payment_status=rejected`,
       },
       auto_return: 'approved',
+      statement_descriptor: 'ELEVEX',
       metadata: {
         plan_id: plan.id,
         plan_name: plan.planName,
         user_id: String(userId || ''),
       },
     };
+
+    console.log(`[MP] Criando preferência: plano=${plan.id}, email=${payerEmail}, ref=${externalReference}`);
 
     const response = await fetch('https://api.mercadopago.com/checkout/preferences', {
       method: 'POST',
@@ -228,10 +249,22 @@ app.post('/api/payments/create-preference', authMiddleware, async (req, res) => 
       body: JSON.stringify(payload),
     });
 
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      return res.status(502).json({ error: data?.message || data?.error || 'Falha ao criar checkout no Mercado Pago' });
+    const rawText = await response.text();
+    let data;
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      console.error(`[MP] Resposta não-JSON do Mercado Pago (HTTP ${response.status}):`, rawText.slice(0, 500));
+      return res.status(502).json({ error: 'Resposta inválida do Mercado Pago. Verifique o Access Token.' });
     }
+
+    if (!response.ok) {
+      console.error(`[MP] Erro HTTP ${response.status} do Mercado Pago:`, JSON.stringify(data, null, 2));
+      const mpError = data?.message || data?.error || data?.cause?.[0]?.description || 'Falha ao criar checkout';
+      return res.status(502).json({ error: `Mercado Pago: ${mpError}` });
+    }
+
+    console.log(`[MP] Preferência criada com sucesso: id=${data.id}`);
 
     return res.json({
       preferenceId: data.id,
@@ -239,14 +272,16 @@ app.post('/api/payments/create-preference', authMiddleware, async (req, res) => 
       sandboxInitPoint: data.sandbox_init_point,
     });
   } catch (error) {
-    return res.status(500).json({ error: error.message || 'Erro ao criar preferência de pagamento' });
+    console.error('[MP] Exceção ao criar preferência:', error);
+    return res.status(500).json({ error: error.message || 'Erro interno ao criar preferência de pagamento' });
   }
 });
 
 /**
  * Verifica status de pagamento no Mercado Pago
+ * Sem authMiddleware — precisa funcionar no redirect de volta do MP
  */
-app.get('/api/payments/verify', authMiddleware, async (req, res) => {
+app.get('/api/payments/verify', async (req, res) => {
   try {
     if (!MP_ACCESS_TOKEN) {
       return res.status(500).json({ error: 'Mercado Pago não configurado no servidor' });
@@ -257,6 +292,8 @@ app.get('/api/payments/verify', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'paymentId é obrigatório' });
     }
 
+    console.log(`[MP] Verificando pagamento: ${paymentId}`);
+
     const response = await fetch(`https://api.mercadopago.com/v1/payments/${encodeURIComponent(paymentId)}`, {
       method: 'GET',
       headers: {
@@ -266,11 +303,14 @@ app.get('/api/payments/verify', authMiddleware, async (req, res) => {
 
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
+      console.error(`[MP] Erro ao verificar pagamento ${paymentId}:`, JSON.stringify(data));
       return res.status(502).json({ error: data?.message || data?.error || 'Falha ao verificar pagamento' });
     }
 
     const status = String(data?.status || '').toLowerCase();
     const normalizedStatus = status === 'approved' ? 'approved' : status === 'pending' || status === 'in_process' ? 'pending' : 'rejected';
+
+    console.log(`[MP] Pagamento ${paymentId}: status=${normalizedStatus}`);
 
     return res.json({
       status: normalizedStatus,
@@ -278,6 +318,7 @@ app.get('/api/payments/verify', authMiddleware, async (req, res) => {
       externalReference: data?.external_reference || null,
     });
   } catch (error) {
+    console.error(`[MP] Exceção ao verificar pagamento:`, error);
     return res.status(500).json({ error: error.message || 'Erro ao verificar pagamento' });
   }
 });

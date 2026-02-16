@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
-    "ingest": "node scripts/ingestPDFs.js"
+    "ingest": "node scripts/ingestPDFs.js",
+    "eval:generate": "node scripts/generateEvalSet.js --count=200",
+    "eval:run": "node scripts/evaluateRag.js --limit=200"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

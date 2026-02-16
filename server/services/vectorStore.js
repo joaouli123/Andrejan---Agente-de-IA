@@ -318,6 +318,118 @@ export async function searchSimilar(queryEmbedding, topK = 5, brandFilter = null
   }));
 }
 
+function tokenizeForLexical(text) {
+  return String(text || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(t => t.length >= 2);
+}
+
+function bm25Score(queryTokens, docTokens, docFreqMap, totalDocs, avgDocLen, k1 = 1.5, b = 0.75) {
+  if (!queryTokens.length || !docTokens.length) return 0;
+
+  const tf = new Map();
+  for (const t of docTokens) tf.set(t, (tf.get(t) || 0) + 1);
+
+  const uniqueQuery = Array.from(new Set(queryTokens));
+  let score = 0;
+  const docLen = docTokens.length;
+
+  for (const term of uniqueQuery) {
+    const freq = tf.get(term) || 0;
+    if (!freq) continue;
+
+    const df = docFreqMap.get(term) || 0;
+    const idf = Math.log(1 + (totalDocs - df + 0.5) / (df + 0.5));
+    const denom = freq + k1 * (1 - b + b * (docLen / Math.max(1, avgDocLen)));
+    score += idf * ((freq * (k1 + 1)) / Math.max(1e-9, denom));
+  }
+
+  return score;
+}
+
+/**
+ * Busca lexical (BM25) para recuperação híbrida com o vetor.
+ */
+export async function searchLexical(query, topK = 10, brandFilter = null) {
+  const queryTokens = tokenizeForLexical(query);
+  if (queryTokens.length === 0 || vectorStore.documents.length === 0) return [];
+
+  const candidates = [];
+  const filterLower = (brandFilter || '').toLowerCase();
+
+  for (let i = 0; i < vectorStore.documents.length; i++) {
+    const meta = vectorStore.metadatas[i] || {};
+    if (filterLower) {
+      const source = String(meta?.source || '').toLowerCase();
+      const brand = String(meta?.brandName || '').toLowerCase();
+      if (!source.includes(filterLower) && !brand.includes(filterLower)) continue;
+    }
+
+    const content = vectorStore.documents[i] || '';
+    const docTokens = tokenizeForLexical(content);
+    if (!docTokens.length) continue;
+
+    candidates.push({ index: i, content, metadata: meta, docTokens });
+  }
+
+  if (!candidates.length) return [];
+
+  const totalDocs = candidates.length;
+  const avgDocLen = candidates.reduce((sum, c) => sum + c.docTokens.length, 0) / totalDocs;
+  const dfMap = new Map();
+
+  for (const c of candidates) {
+    const seen = new Set(c.docTokens);
+    for (const term of seen) dfMap.set(term, (dfMap.get(term) || 0) + 1);
+  }
+
+  const scored = candidates.map(c => {
+    const score = bm25Score(queryTokens, c.docTokens, dfMap, totalDocs, avgDocLen);
+    return {
+      content: c.content,
+      metadata: c.metadata,
+      similarity: score,
+      distance: Math.max(0, 1 - score),
+    };
+  });
+
+  return scored
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, topK);
+}
+
+/**
+ * Exporta corpus indexado para avaliação/diagnóstico.
+ */
+export async function exportCorpus(limit = 5000, brandFilter = null) {
+  const out = [];
+  const max = Math.max(1, Number(limit) || 5000);
+  const filterLower = (brandFilter || '').toLowerCase();
+
+  for (let i = 0; i < vectorStore.documents.length; i++) {
+    const meta = vectorStore.metadatas[i] || {};
+    if (filterLower) {
+      const source = String(meta?.source || '').toLowerCase();
+      const brand = String(meta?.brandName || '').toLowerCase();
+      if (!source.includes(filterLower) && !brand.includes(filterLower)) continue;
+    }
+
+    out.push({
+      id: vectorStore.ids[i],
+      content: vectorStore.documents[i],
+      metadata: meta,
+    });
+
+    if (out.length >= max) break;
+  }
+
+  return out;
+}
+
 /**
  * Normaliza string para comparação robusta
  * Remove TODOS os caracteres não-ASCII para lidar com encoding corrompido
@@ -438,6 +550,8 @@ export default {
   initializeChroma,
   addDocuments,
   searchSimilar,
+  searchLexical,
+  exportCorpus,
   getStats,
   clearCollection,
   hasSource,

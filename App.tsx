@@ -105,7 +105,7 @@ const App: React.FC = () => {
         } else {
           navigateTo('landing', true);
         }
-      } else if (urlView && urlView !== 'landing' && urlView !== 'login' && urlView !== 'register') {
+      } else if (urlView && urlView !== 'landing' && urlView !== 'login' && urlView !== 'register' && urlView !== 'confirmation') {
         navigateTo(urlView, true);
       } else {
         navigateTo('app', true);
