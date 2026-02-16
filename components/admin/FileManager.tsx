@@ -170,11 +170,18 @@ export default function FileManager() {
           formData.append('brandName', brand.name);
         }
 
-        const uploadResponse = await fetch(`${RAG_SERVER_URL}/api/upload`, {
-          method: 'POST',
-          headers: { ...ragHeaders(true) },
-          body: formData
-        });
+        let uploadResponse;
+        try {
+          uploadResponse = await fetch(`${RAG_SERVER_URL}/api/upload`, {
+            method: 'POST',
+            headers: { ...ragHeaders(true) },
+            body: formData
+          });
+        } catch (networkErr: any) {
+          updateFileStatus(i, { status: 'error', message: `Servidor indisponível. Verifique se o backend está rodando. (${networkErr.message})` });
+          errorCount++;
+          continue;
+        }
 
         if (!uploadResponse.ok) {
           const errorText = await uploadResponse.text();

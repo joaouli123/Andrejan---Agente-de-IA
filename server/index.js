@@ -1115,10 +1115,33 @@ app.delete('/api/clear-all', adminMiddleware, async (req, res) => {
       }
     }
 
+    // Limpa registros de source_files no Supabase via REST API
+    let supabaseCleared = false;
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY;
+    if (supabaseUrl && supabaseKey) {
+      try {
+        const sbRes = await fetch(`${supabaseUrl}/rest/v1/source_files?id=gt.0`, {
+          method: 'DELETE',
+          headers: {
+            'apikey': supabaseKey,
+            'Authorization': `Bearer ${supabaseKey}`,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=minimal',
+          },
+        });
+        supabaseCleared = sbRes.ok;
+        if (!sbRes.ok) console.warn('⚠️ Não foi possível limpar source_files no Supabase:', sbRes.status);
+      } catch (e) {
+        console.warn('⚠️ Erro ao limpar source_files no Supabase:', e.message);
+      }
+    }
+
     res.json({
       success: true,
-      message: 'Base vetorial e PDFs em disco limpos',
+      message: `Base vetorial e PDFs em disco limpos${supabaseCleared ? ' + registros Supabase' : ''}`,
       removedFiles,
+      supabaseCleared,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
