@@ -1,5 +1,5 @@
 ﻿import React, { useState, useEffect, useRef } from 'react';
-import { ShieldCheck, Lock, CreditCard, ArrowLeft, Check, Cpu, Zap, Clock, Copy, CheckCircle, AlertTriangle, Smartphone, Timer, Eye, EyeOff } from 'lucide-react';
+import { ShieldCheck, Lock, CreditCard, ArrowLeft, Check, Cpu, Zap, Clock, Copy, CheckCircle, AlertTriangle, Smartphone, Eye, EyeOff } from 'lucide-react';
 import { Plan } from './Pricing';
 import { processCardPayment, processPixPayment, verifyMercadoPagoPayment, fetchMPPublicKey } from '../services/paymentApi';
 import * as Storage from '../services/storage';
@@ -11,37 +11,40 @@ declare global {
   }
 }
 
-/* ── Payment Brand SVG Icons (monochrome) ── */
+/* ── Payment Brand SVG Icons (official colors) ── */
+
+const MastercardIcon = () => (
+  <svg viewBox="0 0 48 30" className="h-7 w-auto">
+    <circle cx="18" cy="15" r="10" fill="#EB001B" />
+    <circle cx="30" cy="15" r="10" fill="#F79E1B" />
+    <path d="M24 7.5a10 10 0 0 0-3.73 7.5A10 10 0 0 0 24 22.5a10 10 0 0 0 3.73-7.5A10 10 0 0 0 24 7.5z" fill="#FF5F00" />
+  </svg>
+);
 
 const VisaIcon = () => (
-  <svg viewBox="0 0 48 16" className="h-5 w-auto" fill="currentColor">
+  <svg viewBox="0 0 48 16" className="h-6 w-auto" fill="#1A1F71">
     <path d="M19.4 0.5L12.5 15.5H8.2L4.8 3.6C4.6 2.8 4.4 2.5 3.8 2.2C2.8 1.7 1.2 1.2 0 0.9L0.1 0.5H6.9C7.8 0.5 8.5 1 8.7 2.1L10.3 10.6L14.5 0.5H19.4ZM34 10.7C34 6.6 28.2 6.4 28.3 4.5C28.3 3.9 28.8 3.3 30 3.1C30.6 3 32.2 3 34 3.8L34.7 0.9C33.7 0.5 32.5 0.2 31 0.2C26.4 0.2 23.2 2.6 23.2 6C23.2 8.4 25.3 9.8 26.9 10.6C28.6 11.5 29.1 12 29.1 12.8C29.1 14 27.7 14.4 26.4 14.4C24.4 14.5 23.2 13.9 22.3 13.5L21.5 16.5C22.5 17 24.2 17.3 26 17.4C30.9 17.4 34 15 34 11.4V10.7ZM44.2 15.5H48L44.7 0.5H41.2C40.4 0.5 39.8 0.9 39.5 1.7L32.6 15.5H37.5L38.4 13H44.4L44.2 15.5ZM39.8 9.6L42.3 3L43.7 9.6H39.8ZM27.6 0.5L23.7 15.5H19L22.9 0.5H27.6Z"/>
   </svg>
 );
 
-const MastercardIcon = () => (
-  <svg viewBox="0 0 38 24" className="h-5 w-auto" fill="none" stroke="currentColor" strokeWidth="1.5">
-    <circle cx="14" cy="12" r="8" />
-    <circle cx="24" cy="12" r="8" />
-  </svg>
-);
-
-const EloIcon = () => (
-  <svg viewBox="0 0 40 16" className="h-5 w-auto" fill="currentColor">
-    <text x="0" y="13" fontFamily="Arial, sans-serif" fontSize="14" fontWeight="bold" letterSpacing="-0.5">elo</text>
-  </svg>
-);
-
 const AmexIcon = () => (
-  <svg viewBox="0 0 40 16" className="h-5 w-auto" fill="currentColor">
-    <text x="0" y="13" fontFamily="Arial, sans-serif" fontSize="10" fontWeight="bold" letterSpacing="0.5">AMEX</text>
+  <svg viewBox="0 0 48 30" className="h-7 w-auto">
+    <rect width="48" height="30" rx="4" fill="#016FD0" />
+    <text x="24" y="19" textAnchor="middle" fontFamily="Arial, sans-serif" fontSize="10" fontWeight="bold" fill="white" letterSpacing="0.5">AMEX</text>
   </svg>
 );
 
 const PixIcon = () => (
-  <svg viewBox="0 0 24 24" className="h-5 w-auto" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M6.5 6.5L12 12m0 0l5.5 5.5M12 12l5.5-5.5M12 12L6.5 17.5" />
-    <rect x="3" y="3" width="18" height="18" rx="3" />
+  <svg viewBox="0 0 24 24" className="h-7 w-auto" fill="none">
+    <path d="M13.74 18.28l3.54-3.54a1.78 1.78 0 0 0 0-2.5l-3.54-3.54a2.47 2.47 0 0 0-3.48 0l-3.54 3.54a1.78 1.78 0 0 0 0 2.5l3.54 3.54a2.47 2.47 0 0 0 3.48 0z" fill="#32BCAD" />
+    <path d="M17.28 5.72l-3.54 3.54 1.74 1.74 3.54-3.54a1.78 1.78 0 0 0 0-2.5l-.24-.24a1.78 1.78 0 0 0-1.5 1z" fill="#32BCAD" />
+    <path d="M6.72 18.28l3.54-3.54-1.74-1.74-3.54 3.54a1.78 1.78 0 0 0 0 2.5l.24.24a1.78 1.78 0 0 0 1.5-1z" fill="#32BCAD" />
+  </svg>
+);
+
+const EloIcon = () => (
+  <svg viewBox="0 0 40 16" className="h-5 w-auto" fill="#231F20">
+    <text x="0" y="13" fontFamily="Arial, sans-serif" fontSize="14" fontWeight="bold" letterSpacing="-0.5">elo</text>
   </svg>
 );
 
@@ -386,15 +389,9 @@ const Checkout: React.FC<CheckoutProps> = ({ plan, onBack, onPaymentComplete, in
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
               {/* Form header */}
               <div className="px-6 sm:px-8 py-5 border-b border-slate-100">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h2 className="text-xl font-bold text-slate-900">Assinar Plano {plan.name}</h2>
-                    <p className="text-slate-500 text-sm mt-0.5">Preencha seus dados para concluir</p>
-                  </div>
-                  <div className="flex items-center gap-1.5 text-blue-600 bg-blue-50 border border-blue-200 rounded-lg px-3 py-1.5">
-                    <Timer size={14} />
-                    <span className="text-sm font-bold font-mono">{mins}:{secs}</span>
-                  </div>
+                <div>
+                  <h2 className="text-xl font-bold text-slate-900">Assinar Plano {plan.name}</h2>
+                  <p className="text-slate-500 text-sm mt-0.5">Preencha seus dados para concluir</p>
                 </div>
               </div>
 
@@ -649,9 +646,19 @@ const Checkout: React.FC<CheckoutProps> = ({ plan, onBack, onPaymentComplete, in
                 </div>
               </div>
 
+              <div className="mt-5 pt-5 border-t border-slate-200">
+                <p className="text-xs text-slate-400 mb-3">Formas de pagamento</p>
+                <div className="flex flex-wrap items-center gap-4">
+                  <span title="Mastercard"><MastercardIcon /></span>
+                  <span title="Visa"><VisaIcon /></span>
+                  <span title="Amex"><AmexIcon /></span>
+                  <span title="PIX"><PixIcon /></span>
+                </div>
+              </div>
+
               <div className="mt-5 space-y-2.5 pt-5 border-t border-slate-200">
                 <div className="flex items-center gap-2 text-sm text-slate-500">
-                  <ShieldCheck className="w-4 h-4 text-green-500" />
+                  <ShieldCheck className="w-4 h-4 text-slate-400" />
                   <span>Pagamento seguro</span>
                 </div>
                 <div className="flex items-center gap-2 text-sm text-slate-500">
@@ -659,31 +666,12 @@ const Checkout: React.FC<CheckoutProps> = ({ plan, onBack, onPaymentComplete, in
                   <span>Dados protegidos</span>
                 </div>
                 <div className="flex items-center gap-2 text-sm text-slate-500">
-                  <ShieldCheck className="w-4 h-4 text-blue-500" />
+                  <ShieldCheck className="w-4 h-4 text-slate-400" />
                   <span>Garantia de 7 dias</span>
                 </div>
                 <div className="flex items-center gap-2 text-sm text-slate-500">
                   <Clock className="w-4 h-4 text-slate-400" />
                   <span>Cancele quando quiser</span>
-                </div>
-              </div>
-
-              <div className="mt-5 pt-5 border-t border-slate-200">
-                <div className="flex items-center justify-center gap-2 text-sm">
-                  <Timer size={14} className="text-blue-600" />
-                  <span className="text-slate-500">Finalize em</span>
-                  <span className="font-bold font-mono text-blue-600">{mins}:{secs}</span>
-                </div>
-              </div>
-
-              <div className="mt-5 pt-5 border-t border-slate-200">
-                <p className="text-xs text-slate-400 text-center mb-3">Aceitamos</p>
-                <div className="flex flex-wrap items-center justify-center gap-3 text-slate-400">
-                  <span title="Visa"><VisaIcon /></span>
-                  <span title="Mastercard"><MastercardIcon /></span>
-                  <span title="Elo"><EloIcon /></span>
-                  <span title="Amex"><AmexIcon /></span>
-                  <span title="PIX"><PixIcon /></span>
                 </div>
               </div>
             </div>
