@@ -150,6 +150,9 @@ const uploadLimiter = rateLimit({
 });
 
 // Configuração do Multer para upload de arquivos
+// PDFs são salvos na raiz de PDF_DIR. A marca é detectada automaticamente
+// durante o processamento (autoBrandForFile) e salva como metadado nos chunks.
+// Para organizar em pastas: POST /api/organize-pdfs ou node scripts/setupFolders.js
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     if (!fs.existsSync(PDF_DIR)) {
@@ -232,6 +235,71 @@ app.get('/api/brand-diagnosis', adminMiddleware, async (req, res) => {
         Object.entries(brandMap).map(([brand, srcs]) => [brand, { count: srcs.length, sources: srcs }])
       ),
       tip: 'Para re-indexar com metadados de marca: POST /api/reindex ou execute scripts/reindexWithBrands.js',
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Organiza PDFs soltos na raiz de /pdfs/ em subpastas por marca.
+ * PDFs em pdfs/Orona_arca.pdf → pdfs/Orona/Orona_arca.pdf
+ * POST body: { dryRun?: boolean }
+ */
+app.post('/api/organize-pdfs', adminMiddleware, async (req, res) => {
+  try {
+    const dryRun = Boolean(req.body?.dryRun);
+    const brands = ['Otis', 'Orona', 'Schindler', 'Sectron', 'ThyssenKrupp', 'Atlas'];
+
+    // Cria pastas
+    if (!dryRun) {
+      for (const brand of brands) {
+        const dir = path.join(PDF_DIR, brand);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      }
+      const unknownDir = path.join(PDF_DIR, '_sem_marca');
+      if (!fs.existsSync(unknownDir)) fs.mkdirSync(unknownDir, { recursive: true });
+    }
+
+    // Lista PDFs soltos na raiz
+    const rootFiles = fs.existsSync(PDF_DIR)
+      ? fs.readdirSync(PDF_DIR, { withFileTypes: true })
+          .filter(e => e.isFile() && e.name.toLowerCase().endsWith('.pdf'))
+          .map(e => e.name)
+      : [];
+
+    const moves = [];
+    for (const filename of rootFiles) {
+      const brand = detectBrandFromFilename(filename)
+        || detectBrandFromFilename(getOriginalNameFromDiskFilename(filename));
+      const targetDir = brand || '_sem_marca';
+      
+      if (!dryRun) {
+        const src = path.join(PDF_DIR, filename);
+        const dst = path.join(PDF_DIR, targetDir, filename);
+        if (!fs.existsSync(dst)) {
+          fs.renameSync(src, dst);
+        }
+      }
+      moves.push({ file: filename, brand: brand || null, target: targetDir });
+    }
+
+    // Conta por pasta
+    const folderCounts = {};
+    for (const brand of [...brands, '_sem_marca']) {
+      const dir = path.join(PDF_DIR, brand);
+      if (fs.existsSync(dir)) {
+        folderCounts[brand] = listPdfFilesRecursive(dir).length;
+      }
+    }
+
+    res.json({
+      success: true,
+      dryRun,
+      movedCount: moves.length,
+      moves,
+      folderCounts,
+      nextStep: 'POST /api/reindex para re-indexar com metadados de marca',
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
