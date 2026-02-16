@@ -50,6 +50,8 @@ export default function AdminDashboard() {
   const [checkingDuplicates, setCheckingDuplicates] = useState(false);
   const [duplicateFiles, setDuplicateFiles] = useState<Set<string>>(new Set());
   const [serverStatus, setServerStatus] = useState<'checking' | 'online' | 'offline'>('checking');
+  const [dragging, setDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const progressScrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -286,6 +288,19 @@ export default function AdminDashboard() {
     
     setDuplicateFiles(dupes);
     setCheckingDuplicates(false);
+  }
+
+  // Robust file handler - called from both input onChange and drag-and-drop
+  function handleFilesSelected(rawFiles: FileList | File[] | null) {
+    const files = Array.from(rawFiles || []).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+    console.log('[Upload] Arquivos selecionados:', files.map(f => `${f.name} (${(f.size/1024/1024).toFixed(1)}MB)`));
+    if (files.length === 0) {
+      console.warn('[Upload] Nenhum PDF válido selecionado');
+      return;
+    }
+    setFilesToUpload(files);
+    setDuplicateFiles(new Set());
+    checkDuplicates(files);
   }
 
   async function handleUpload(forceAll = false) {
@@ -530,19 +545,37 @@ export default function AdminDashboard() {
           {/* Drop zone */}
           {!uploading && uploadStatuses.length === 0 && (
             <>
-              <div className="border-2 border-dashed border-slate-300 rounded-xl p-8 flex flex-col items-center justify-center text-slate-500 hover:bg-blue-50/30 hover:border-blue-400 transition-all cursor-pointer relative mb-4">
-                <input 
-                  type="file" accept=".pdf" multiple
-                  className="absolute inset-0 opacity-0 cursor-pointer"
-                  onChange={e => {
-                    const files = Array.from(e.target.files || []);
-                    setFilesToUpload(files);
-                    setDuplicateFiles(new Set());
-                    checkDuplicates(files);
-                  }}
-                />
-                <Upload size={36} className="mb-2 text-slate-400" />
-                <p className="font-semibold text-slate-700 text-sm">Clique ou arraste PDFs aqui</p>
+              {/* Hidden file input */}
+              <input
+                ref={fileInputRef}
+                type="file" accept=".pdf" multiple
+                className="hidden"
+                onChange={e => {
+                  handleFilesSelected(e.target.files);
+                  // Reset input so the same file can be selected again
+                  e.target.value = '';
+                }}
+              />
+              <div
+                className={`border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center transition-all cursor-pointer mb-4 ${
+                  dragging
+                    ? 'border-blue-500 bg-blue-50 scale-[1.02]'
+                    : 'border-slate-300 text-slate-500 hover:bg-blue-50/30 hover:border-blue-400'
+                }`}
+                onClick={() => fileInputRef.current?.click()}
+                onDragOver={e => { e.preventDefault(); e.stopPropagation(); setDragging(true); }}
+                onDragEnter={e => { e.preventDefault(); e.stopPropagation(); setDragging(true); }}
+                onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setDragging(false); }}
+                onDrop={e => {
+                  e.preventDefault(); e.stopPropagation(); setDragging(false);
+                  handleFilesSelected(e.dataTransfer.files);
+                }}
+              >
+                <Upload size={36} className={`mb-2 ${dragging ? 'text-blue-500' : 'text-slate-400'}`} />
+                <p className="font-semibold text-slate-700 text-sm">
+                  {dragging ? 'Solte os PDFs aqui!' : 'Clique ou arraste PDFs aqui'}
+                </p>
+                <p className="text-xs text-slate-400 mt-1">Apenas arquivos .pdf</p>
               </div>
 
               {filesToUpload.length > 0 && (
