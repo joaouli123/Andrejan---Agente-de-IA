@@ -918,7 +918,12 @@ async function processUploadInBackground(taskId, filePath, originalName, brandNa
     
     let extracted;
     try {
-      extracted = await extractTextWithOCR(filePath, (progress) => {
+      const extractTimeoutMs = Number.parseInt(process.env.UPLOAD_EXTRACT_TIMEOUT_MS || '', 10) || 180000;
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error(`Timeout na extração após ${Math.round(extractTimeoutMs / 1000)}s`)), extractTimeoutMs);
+      });
+
+      extracted = await Promise.race([extractTextWithOCR(filePath, (progress) => {
         if (progress.phase === 'ocr_start') {
           task.message = '🔍 PDF com imagens detectado, iniciando OCR...';
           task.progress = 15;
@@ -930,13 +935,37 @@ async function processUploadInBackground(taskId, filePath, originalName, brandNa
           task.message = progress.message || 'Texto extraído normalmente';
           task.progress = 35;
         }
-      });
+      }), timeoutPromise]);
     } catch (extractErr) {
-      console.error(`   ❌ [${taskId}] Extração falhou: ${extractErr.message}`);
-      task.status = 'error';
-      task.message = `Erro na extração: ${extractErr.message}. O PDF pode estar corrompido ou protegido.`;
-      setTimeout(() => processingTasks.delete(taskId), 5 * 60 * 1000);
-      return;
+      console.error(`   ❌ [${taskId}] Extração OCR falhou/timeout: ${extractErr.message}`);
+      task.message = 'OCR demorou demais. Tentando extração sem OCR...';
+      task.progress = 20;
+
+      // Tenta fallback resiliente sem OCR
+      try {
+        await terminateOCR();
+        const fallback = await extractTextFromPDF(filePath);
+        extracted = {
+          text: fallback.text || '',
+          numPages: fallback.numPages || 0,
+          info: fallback.info || {},
+          metadata: fallback.metadata || {},
+          ocrUsed: false,
+          ocrChars: 0
+        };
+
+        if (!extracted.text || extracted.text.trim().length < 30) {
+          throw new Error('fallback sem OCR também retornou pouco texto');
+        }
+
+        task.message = 'OCR indisponível no momento. Prosseguindo com texto extraído do PDF.';
+        task.progress = 40;
+      } catch (fallbackErr) {
+        task.status = 'error';
+        task.message = `Erro na extração: ${extractErr.message}. Fallback também falhou: ${fallbackErr.message}`;
+        setTimeout(() => processingTasks.delete(taskId), 5 * 60 * 1000);
+        return;
+      }
     }
     
     if (!extracted.text || extracted.text.trim().length < 30) {
