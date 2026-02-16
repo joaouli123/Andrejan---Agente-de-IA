@@ -242,19 +242,32 @@ async function collectQdrantCorpus(limit = 5000, brandFilter = null) {
   const filterLower = (brandFilter || '').toLowerCase();
   let next = null;
 
+  // ═══ SERVER-SIDE FILTER no scroll também ═══
+  // Quando brandFilter está definido, usa filtro nativo para pegar só docs da marca
+  const scrollFilter = brandFilter ? {
+    should: [
+      { key: 'brandName', match: { value: brandFilter } },
+      { key: 'brandName', match: { value: filterLower } },
+      { key: 'brandName', match: { value: brandFilter.charAt(0).toUpperCase() + brandFilter.slice(1).toLowerCase() } },
+    ],
+  } : undefined;
+
   for (let iter = 0; iter < 200; iter++) {
     const remaining = max - docs.length;
     if (remaining <= 0) break;
 
+    const scrollBody = {
+      limit: Math.min(256, remaining),
+      offset: next,
+      with_payload: true,
+      with_vector: false,
+    };
+    if (scrollFilter) scrollBody.filter = scrollFilter;
+
     const res = await qdrantFetch(`/collections/${encodeURIComponent(QDRANT_COLLECTION)}/points/scroll`, {
       method: 'POST',
       headers: qdrantHeaders(),
-      body: JSON.stringify({
-        limit: Math.min(256, remaining),
-        offset: next,
-        with_payload: true,
-        with_vector: false,
-      }),
+      body: JSON.stringify(scrollBody),
     });
 
     const data = await res.json();
@@ -262,9 +275,12 @@ async function collectQdrantCorpus(limit = 5000, brandFilter = null) {
 
     for (const p of points) {
       const payload = p?.payload || {};
-      const source = String(payload?.source || '').toLowerCase();
-      const brand = String(payload?.brandName || '').toLowerCase();
-      if (filterLower && !source.includes(filterLower) && !brand.includes(filterLower)) continue;
+      // Fallback client-side para chunks sem brandName (legacy)
+      if (filterLower && !scrollFilter) {
+        const source = String(payload?.source || '').toLowerCase();
+        const brand = String(payload?.brandName || '').toLowerCase();
+        if (!source.includes(filterLower) && !brand.includes(filterLower)) continue;
+      }
 
       docs.push({
         id: p?.id,
@@ -381,39 +397,96 @@ export async function searchSimilar(queryEmbedding, topK = 5, brandFilter = null
 
   await ensureQdrantCollection();
 
-  // Busca mais e filtra client-side para manter o mesmo comportamento do store local
-  const fetchK = Math.max(topK * 5, 25);
+  const mapResult = (r) => ({
+    content: r?.payload?.content || '',
+    metadata: r?.payload?.metadata || {},
+    similarity: r?.score || 0,
+    distance: 1 - (r?.score || 0),
+    _payload: r?.payload || {},
+  });
 
+  // ═══ SERVER-SIDE FILTER ═══
+  // Usa filtro nativo do Qdrant quando brandFilter está definido.
+  // Isso é MUITO mais preciso do que buscar tudo e filtrar client-side,
+  // pois garante que todos os topK resultados são da marca correta.
+  if (brandFilter) {
+    const filterLower = brandFilter.toLowerCase();
+    const filterCapitalized = brandFilter.charAt(0).toUpperCase() + brandFilter.slice(1).toLowerCase();
+
+    const searchBody = {
+      vector: queryEmbedding,
+      limit: topK,
+      with_payload: true,
+      with_vector: false,
+      filter: {
+        should: [
+          { key: 'brandName', match: { value: brandFilter } },
+          { key: 'brandName', match: { value: filterLower } },
+          { key: 'brandName', match: { value: filterCapitalized } },
+        ],
+      },
+    };
+
+    const res = await qdrantFetch(`/collections/${encodeURIComponent(QDRANT_COLLECTION)}/points/search`, {
+      method: 'POST',
+      headers: qdrantHeaders(),
+      body: JSON.stringify(searchBody),
+    });
+
+    const data = await res.json();
+    let results = (data?.result || []).map(mapResult);
+
+    // Fallback: se poucos resultados com filtro por brandName,
+    // tenta também filtrar por substring no source (para PDFs sem brandName)
+    if (results.length < topK) {
+      const fallbackBody = {
+        vector: queryEmbedding,
+        limit: Math.max(topK * 3, 30),
+        with_payload: true,
+        with_vector: false,
+      };
+
+      const res2 = await qdrantFetch(`/collections/${encodeURIComponent(QDRANT_COLLECTION)}/points/search`, {
+        method: 'POST',
+        headers: qdrantHeaders(),
+        body: JSON.stringify(fallbackBody),
+      });
+
+      const data2 = await res2.json();
+      const seen = new Set(results.map(r => r.content?.slice(0, 100)));
+
+      for (const r of (data2?.result || [])) {
+        const mapped = mapResult(r);
+        const key = mapped.content?.slice(0, 100);
+        if (seen.has(key)) continue;
+
+        const src = (r?.payload?.source || '').toLowerCase();
+        const brand = (r?.payload?.brandName || '').toLowerCase();
+        if (src.includes(filterLower) || brand.includes(filterLower)) {
+          seen.add(key);
+          results.push(mapped);
+        }
+        if (results.length >= topK) break;
+      }
+    }
+
+    return results.slice(0, topK);
+  }
+
+  // Sem filtro de marca: busca normal
   const res = await qdrantFetch(`/collections/${encodeURIComponent(QDRANT_COLLECTION)}/points/search`, {
     method: 'POST',
     headers: qdrantHeaders(),
     body: JSON.stringify({
       vector: queryEmbedding,
-      limit: fetchK,
+      limit: topK,
       with_payload: true,
       with_vector: false,
     }),
   });
 
   const data = await res.json();
-  let results = (data?.result || []).map(r => ({
-    content: r?.payload?.content || '',
-    metadata: r?.payload?.metadata || {},
-    similarity: r?.score || 0,
-    distance: 1 - (r?.score || 0),
-    _payload: r?.payload || {},
-  }));
-
-  if (brandFilter) {
-    const filterLower = brandFilter.toLowerCase();
-    results = results.filter(r => {
-      const src = (r._payload?.source || '').toLowerCase();
-      const brand = (r._payload?.brandName || '').toLowerCase();
-      return src.includes(filterLower) || brand.includes(filterLower);
-    });
-  }
-
-  return results.slice(0, topK);
+  return (data?.result || []).map(mapResult).slice(0, topK);
 }
 
 export async function searchLexical(query, topK = 10, brandFilter = null) {

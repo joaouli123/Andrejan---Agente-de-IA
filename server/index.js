@@ -55,6 +55,42 @@ function getOriginalNameFromDiskFilename(filename) {
   return filename.replace(/^\d+-\d+-/, '');
 }
 
+// ═══ AUTO-DETECÇÃO DE MARCA A PARTIR DO NOME DO ARQUIVO ═══
+const BRAND_FILE_RULES = [
+  { canonical: 'Otis',       patterns: [/\botis\b/i, /\bgen\s*2\b/i, /\bgecb\b/i, /\blcb\s*i{0,2}\b/i, /\bmcss\b/i] },
+  { canonical: 'Orona',      patterns: [/\borona\b/i, /\barca\b/i] },
+  { canonical: 'Schindler',  patterns: [/\bschindler\b/i, /\b(3300|5500|7000)\b/] },
+  { canonical: 'Sectron',    patterns: [/\bsectron\b/i, /\badv[\s-]*\d+/i] },
+  { canonical: 'Thyssen',    patterns: [/\bthyssen\b/i, /\btke?\b/i] },
+  { canonical: 'Atlas',      patterns: [/\batlas\b/i] },
+];
+
+function detectBrandFromFilename(filename) {
+  const name = String(filename || '');
+  for (const rule of BRAND_FILE_RULES) {
+    if (rule.patterns.some(p => p.test(name))) return rule.canonical;
+  }
+  return null;
+}
+
+function detectBrandFromFolderPath(fullPath, baseDir) {
+  const rel = path.relative(baseDir, fullPath);
+  const parts = rel.split(/[\\/]/);
+  for (const part of parts) {
+    const brand = detectBrandFromFilename(part);
+    if (brand) return brand;
+  }
+  return null;
+}
+
+function autoBrandForFile(fullPath, baseDir, explicitBrand) {
+  if (explicitBrand) return explicitBrand;
+  const fromFolder = detectBrandFromFolderPath(fullPath, baseDir);
+  if (fromFolder) return fromFolder;
+  const originalName = getOriginalNameFromDiskFilename(path.basename(fullPath));
+  return detectBrandFromFilename(originalName);
+}
+
 // --- SEGURANÇA ---
 
 // CORS restrito a origens permitidas
@@ -164,6 +200,39 @@ app.get('/api/stats', authMiddleware, async (req, res) => {
   try {
     const stats = await getStats();
     res.json(stats);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Diagnóstico de metadados de marca nos documentos indexados
+ * Mostra quantos chunks de cada marca existem e se têm brandName definido
+ */
+app.get('/api/brand-diagnosis', adminMiddleware, async (req, res) => {
+  try {
+    const sources = await getIndexedSources();
+    const brandMap = {};
+    let withBrand = 0;
+    let withoutBrand = 0;
+
+    for (const source of sources) {
+      const detected = detectBrandFromFilename(source) || detectBrandFromFilename(getOriginalNameFromDiskFilename(source));
+      const label = detected || '(sem marca)';
+      if (!brandMap[label]) brandMap[label] = [];
+      brandMap[label].push(source);
+    }
+
+    const stats = await getStats();
+
+    res.json({
+      totalDocuments: stats.totalDocuments,
+      totalSources: sources.length,
+      brandBreakdown: Object.fromEntries(
+        Object.entries(brandMap).map(([brand, srcs]) => [brand, { count: srcs.length, sources: srcs }])
+      ),
+      tip: 'Para re-indexar com metadados de marca: POST /api/reindex ou execute scripts/reindexWithBrands.js',
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -440,12 +509,17 @@ app.post('/api/reindex', adminMiddleware, async (req, res) => {
 
       console.log(`📄 Reindexando: ${originalName}`);
       const extracted = await extractTextWithOCR(fullPath);
+      
+      // Auto-detecção de marca: usa brandName explícito OU detecta pelo nome/pasta
+      const effectiveBrand = autoBrandForFile(fullPath, PDF_DIR, brandName);
+      if (effectiveBrand) console.log(`   🏷️  Marca: ${effectiveBrand}`);
+      
       const chunks = splitTextIntoChunks(extracted.text, {
         source: originalName,
         filePath: fullPath,
         numPages: extracted.numPages,
         title: extracted.info?.Title || originalName.replace('.pdf', ''),
-        brandName: brandName,
+        brandName: effectiveBrand,
         reindexedAt: new Date().toISOString(),
         ocrUsed: extracted.ocrUsed || false,
       });
@@ -607,7 +681,7 @@ async function processUploadInBackground(taskId, filePath, originalName, brandNa
       filePath: filePath,
       numPages: extracted.numPages,
       title: extracted.info?.Title || originalName.replace('.pdf', ''),
-      brandName: brandName || null,
+      brandName: autoBrandForFile(filePath, PDF_DIR, brandName),
       uploadedAt: new Date().toISOString()
     });
     

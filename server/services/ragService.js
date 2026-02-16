@@ -142,6 +142,9 @@ function getResponseCacheKey(question, brandFilter) {
 const BOARD_TOKENS = [
   'LCBII', 'LCB', 'MCSS', 'MCP', 'MCB', 'RBI', 'GMUX', 'PLA6001', 'DCB', 'PIB',
   'GCIOB', 'MCP100', 'PLA6001', 'URM', 'CAVF', 'GDCB',
+  'GECB', 'GEN2', 'OHC4000', 'LM1', 'LM2', 'SMC', 'VARIODYN',
+  'ADV-210', 'ADV210', 'ADV-310', 'ADV310', 'BOS9693',
+  'CPIC', 'MC2', 'MC3', 'TCI', 'TCI4',
   'YOUNG', 'QUADRO DE COMANDO YOUNG',
 ];
 
@@ -208,13 +211,82 @@ const STATUS_INDICATOR_KEYWORDS = [
 ];
 
 const BRAND_CANONICAL_MAP = [
-  { canonical: 'Orona', aliases: ['orona', 'arca'] },
-  { canonical: 'Otis', aliases: ['otis'] },
-  { canonical: 'Schindler', aliases: ['schindler'] },
-  { canonical: 'Sectron', aliases: ['sectron'] },
-  { canonical: 'Thyssen', aliases: ['thyssen', 'tk', 'tke'] },
-  { canonical: 'Atlas', aliases: ['atlas'] },
+  {
+    canonical: 'Orona',
+    aliases: ['orona', 'arca'],
+    // Termos técnicos exclusivos Orona (placas, módulos)
+    techTerms: ['arca', 'orona'],
+    models: ['arca ii', 'arca iii', 'arca iv'],
+  },
+  {
+    canonical: 'Otis',
+    aliases: ['otis'],
+    // Placas e componentes exclusivos Otis
+    techTerms: ['gecb', 'gen2', 'gen 2', 'lcb', 'lcbii', 'lcb2', 'lcb ii', 'mcss', 'mcp', 'mcb', 'rbi', 'gmux', 'gdcb', 'gciob', 'pla6001', 'dcb', 'pib', 'urm', 'cavf', 'mcp100', 'otis 2000', 'skyrise', '2000a', 'ohc4000', 'lm1', 'lm2'],
+    models: ['gen2', 'gen 2', 'skyrise', '2000', '2000a', 'mrl'],
+  },
+  {
+    canonical: 'Schindler',
+    aliases: ['schindler'],
+    techTerms: ['schindler', 'variodyn', 'miconic', 'bionic', 'smc'],
+    models: ['3300', '5500', '7000', '3100', '3300ap'],
+  },
+  {
+    canonical: 'Sectron',
+    aliases: ['sectron'],
+    techTerms: ['sectron', 'adv-210', 'adv210', 'adv 210', 'adv-310', 'adv310', 'bos9693'],
+    models: ['adv-210', 'adv-310', 'adv 210', 'adv 310'],
+  },
+  {
+    canonical: 'Thyssen',
+    aliases: ['thyssen', 'tk', 'tke', 'thyssenkrupp'],
+    techTerms: ['thyssen', 'mc2', 'mc3', 'cpic', 'tke', 'tci', 'tci4'],
+    models: ['mc2', 'mc3', 'cpic'],
+  },
+  {
+    canonical: 'Atlas',
+    aliases: ['atlas'],
+    techTerms: ['atlas'],
+    models: [],
+  },
 ];
+
+/**
+ * Detecta marca a partir de termos técnicos exclusivos.
+ * Ex: "GECB" → Otis, "Arca" → Orona, "ADV-210" → Sectron
+ */
+function detectBrandFromTechTerms(text) {
+  const normalized = normalizeText(text || '');
+  if (!normalized) return null;
+  for (const brand of BRAND_CANONICAL_MAP) {
+    if (brand.techTerms && brand.techTerms.some(t => normalized.includes(normalizeText(t)))) {
+      return brand.canonical;
+    }
+  }
+  return null;
+}
+
+/**
+ * Detecta modelo a partir do texto usando os patterns de modelo de cada marca.
+ */
+function detectModelFromText(text, brand) {
+  const normalized = normalizeText(text || '');
+  if (!normalized) return null;
+  
+  const targets = brand
+    ? BRAND_CANONICAL_MAP.filter(b => b.canonical === brand)
+    : BRAND_CANONICAL_MAP;
+  
+  for (const b of targets) {
+    if (!b.models) continue;
+    for (const model of b.models) {
+      if (normalized.includes(normalizeText(model))) {
+        return model;
+      }
+    }
+  }
+  return null;
+}
 
 function detectBrandsInText(text) {
   const normalized = normalizeText(text || '');
@@ -222,7 +294,13 @@ function detectBrandsInText(text) {
 
   const found = new Set();
   for (const brand of BRAND_CANONICAL_MAP) {
+    // Verifica aliases tradicionais
     if (brand.aliases.some(alias => normalized.includes(normalizeText(alias)))) {
+      found.add(brand.canonical);
+      continue;
+    }
+    // Verifica termos técnicos exclusivos (placas, módulos, componentes)
+    if (brand.techTerms && brand.techTerms.some(t => normalized.includes(normalizeText(t)))) {
       found.add(brand.canonical);
     }
   }
@@ -597,7 +675,14 @@ function extractSessionState(question, conversationHistory, brandFilter, signals
     .join(' ');
 
   const upper = allText.toUpperCase();
-  const brand = brandFilter || (/(\bORONA\b|\bOTIS\b)/i.exec(allText)?.[1] || null);
+  
+  // Detecção de marca: usa brandFilter explícito, depois aliases+techTerms, depois regex
+  const brand = brandFilter
+    || detectBrandFromTechTerms(allText)
+    || (/(\bORONA\b|\bOTIS\b|\bSCHINDLER\b|\bSECTRON\b|\bTHYSSEN\b|\bATLAS\b)/i.exec(allText)?.[1] || null);
+
+  // Detecção de modelo: usa patterns de cada marca + heurísticas
+  const modelFromMap = detectModelFromText(allText, brand);
 
   // Heurísticas leves para modelo (somente quando o texto já traz explicitamente)
   // Orona: "Arca II" etc.
@@ -621,7 +706,7 @@ function extractSessionState(question, conversationHistory, brandFilter, signals
     if (explicitModel.length < 2) explicitModel = null;
   }
 
-  const model = oronaModel || otisModel || explicitModel;
+  const model = modelFromMap || oronaModel || otisModel || explicitModel;
 
   const board = (signals?.boardTokens?.length || 0) ? signals.boardTokens.join(', ') : null;
   const error = (signals?.errorTokens?.length || 0) ? signals.errorTokens[0] : null;
@@ -1204,7 +1289,7 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
   let rerankerReason = null;
   
   // Similaridade mínima para considerar um documento relevante
-  const MIN_SIMILARITY = 0.55; // Mais permissivo para capturar mais info relevante
+  const MIN_SIMILARITY = 0.45; // Com server-side brand filter, podemos ser mais permissivos
 
   // Blindagem por marca: nunca mistura fabricantes quando houver ambiguidade
   const historyText = (conversationHistory || [])
@@ -1273,21 +1358,50 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
     
     const signals = extractSearchSignals(question, conversationHistory);
     const sessionState = extractSessionState(question, conversationHistory, effectiveBrandFilter, signals);
+    const technicalKeywords = extractTechnicalKeywords(question, conversationHistory, signals);
+    const faultCodes = (signals?.faultCodes?.length ? signals.faultCodes : signals.errorTokens || []).slice(0, 8);
+    const faultCodeQuery = isFaultCodeQuery(question, signals);
 
-    // Gate obrigatório: sempre confirmar marca e modelo antes de responder diagnóstico.
-    // Se já estiver no histórico/filtro, não pergunta novamente.
+    // Gate obrigatório: confirmar marca antes de responder diagnóstico.
+    // MAS: se a marca foi detectada via termo técnico (ex: GECB → Otis),
+    // não bloqueia. Modelo é desejável mas NÃO obrigatório — se temos
+    // marca e a pergunta tem especificidade técnica (placa, código de erro,
+    // componente), respondemos com o que temos.
     const missingBrand = !String(sessionState?.brand || '').trim();
     const missingModel = !String(sessionState?.model || '').trim();
-    if (missingBrand || missingModel) {
-      telemetryOutcome = 'abstained';
-      telemetryBlockedReason = 'missing_brand_or_model';
+    const hasTechnicalSpecificity = Boolean(
+      signals?.boardTokens?.length > 0 ||
+      signals?.errorTokens?.length > 0 ||
+      signals?.faultCodes?.length > 0 ||
+      sessionState?.board ||
+      sessionState?.error ||
+      sessionState?.connector ||
+      pinoutQuery ||
+      faultCodeQuery ||
+      intent === INTENT.safetyChain ||
+      isDiagnosticWorkflowQuery(question)
+    );
 
-      const missingLines = [];
-      if (missingBrand) missingLines.push('- Qual é a marca do equipamento?');
-      if (missingModel) missingLines.push('- Qual é o modelo exato (como aparece na etiqueta/placa)?');
+    if (missingBrand) {
+      // Sem marca nenhuma → precisa perguntar
+      telemetryOutcome = 'abstained';
+      telemetryBlockedReason = 'missing_brand';
 
       return {
-        answer: `Antes de eu te responder com precisão e sem misturar documentação, preciso confirmar:\n${missingLines.join('\n')}`,
+        answer: `Antes de eu te responder com precisão e sem misturar documentação, preciso confirmar:\n- Qual é a marca do equipamento?`,
+        sources: [],
+        searchTime: Date.now() - startTime,
+      };
+    }
+
+    // Marca detectada mas modelo ausente: só bloqueia se pergunta é genérica
+    // (sem placa, sem código de erro, sem conector, sem especificidade técnica)
+    if (missingModel && !hasTechnicalSpecificity) {
+      telemetryOutcome = 'abstained';
+      telemetryBlockedReason = 'missing_model_generic_question';
+
+      return {
+        answer: `Já identifiquei que o equipamento é **${sessionState.brand}**. Para responder com mais precisão:\n- Qual é o modelo exato (como aparece na etiqueta/placa)?`,
         sources: [],
         searchTime: Date.now() - startTime,
       };
@@ -1303,10 +1417,6 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
         searchTime: Date.now() - startTime,
       };
     }
-
-    const technicalKeywords = extractTechnicalKeywords(question, conversationHistory, signals);
-    const faultCodes = (signals?.faultCodes?.length ? signals.faultCodes : signals.errorTokens || []).slice(0, 8);
-    const faultCodeQuery = isFaultCodeQuery(question, signals);
 
     // Otis: para perguntas genéricas, exija modelo/código antes de responder.
     // Evita checklist genérico quando há muito conteúdo e o modelo muda o diagnóstico.
