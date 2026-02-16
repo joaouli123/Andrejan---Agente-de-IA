@@ -937,6 +937,69 @@ function buildClarifyingQuestions(question, hasHistory, signals, sessionState = 
   return questions.slice(0, 3);
 }
 
+function buildPrecisionClarifyingQuestions(question, sessionState = null, signals = null) {
+  const q = String(question || '');
+  const lower = q.toLowerCase();
+
+  const hasModel = Boolean(String(sessionState?.model || '').trim());
+  const hasBoard = Boolean(String(sessionState?.board || '').trim()) || ((signals?.boardTokens?.length || 0) > 0);
+  const hasError = Boolean(String(sessionState?.error || '').trim()) || ((signals?.errorTokens?.length || 0) > 0);
+  const hasLocation = /(cabina|cabine|botoeira|cop|lop|pavimento|andar|hall|porta|casa de maquinas|casa de máquinas|poco|po[çc]o|topo|indicador|display)/i.test(lower);
+
+  const questions = [];
+  const isLightIssue = /(luz|lampad|l[âa]mpad|led|ilumin|apagad)/i.test(lower);
+
+  if (!hasModel) {
+    questions.push('Qual é o modelo exato do elevador (como aparece na etiqueta)?');
+  }
+
+  if (isLightIssue) {
+    if (!hasLocation) {
+      questions.push('Essa luz é de onde exatamente (cabina, botoeira de cabina, pavimento/hall, indicador de andar, casa de máquinas, topo da cabina)?');
+    }
+    questions.push('No local dessa luz, o que está escrito no componente/placa (ex.: COP/LOP, código, etiqueta)?');
+    if (!hasError) {
+      questions.push('Aparece algum código/mensagem no display? Se sim, qual exatamente?');
+    }
+  } else {
+    if (!hasBoard) {
+      questions.push('Qual placa/módulo está envolvido (nome escrito na placa ou no diagnóstico)?');
+    }
+    if (!hasError) {
+      questions.push('Qual código/mensagem aparece no display/diagnóstico?');
+    }
+    if (!hasLocation) {
+      questions.push('Em qual local/componente ocorre o problema (porta, cabina, pavimento, casa de máquinas)?');
+    }
+  }
+
+  if (questions.length === 0) {
+    questions.push('Me descreva exatamente onde ocorre o sintoma e o que aparece no display/placa.');
+  }
+
+  return questions.slice(0, 3);
+}
+
+function shouldForcePrecisionClarification(question, sessionState = null, signals = null) {
+  const q = String(question || '').trim();
+  if (!q) return false;
+
+  const isLikelyVagueSymptom = /(luz apagad|apagad|nao funciona|não funciona|parou|travou|defeito|problema|falha|erro)/i.test(q);
+  if (!isLikelyVagueSymptom) return false;
+
+  const hasSpecificTechnicalAnchor =
+    /\b(cn\s*-?\s*\d+|j\s*-?\s*\d+|pino|pinagem|conector|tens[aã]o|vac|vdc|jumper|bypass|mcss|lcbii|lcb|mcp|mcb|rbi|gmux|pla6001|dcb|pib)\b/i.test(q) ||
+    ((signals?.faultCodes?.length || 0) > 0) ||
+    ((signals?.errorTokens?.length || 0) > 0) ||
+    Boolean(String(sessionState?.board || '').trim()) ||
+    /\b(codigo|c[oó]digo|display)\b/i.test(q);
+
+  if (hasSpecificTechnicalAnchor) return false;
+
+  const isShortQuestion = q.length <= 120;
+  return isShortQuestion;
+}
+
 function extractConnectorTokens(text) {
   if (!text) return [];
   return Array.from(
@@ -1225,6 +1288,17 @@ export async function ragQuery(question, agentSystemInstruction = '', topK = 10,
 
       return {
         answer: `Antes de eu te responder com precisão e sem misturar documentação, preciso confirmar:\n${missingLines.join('\n')}`,
+        sources: [],
+        searchTime: Date.now() - startTime,
+      };
+    }
+
+    if (shouldForcePrecisionClarification(question, sessionState, signals)) {
+      telemetryOutcome = 'abstained';
+      telemetryBlockedReason = 'vague_question_needs_precision';
+      const precisionQuestions = buildPrecisionClarifyingQuestions(question, sessionState, signals);
+      return {
+        answer: `Para eu te dar um diagnóstico preciso (sem chute), preciso destas confirmações rápidas:\n${precisionQuestions.map(q => `- ${q}`).join('\n')}`,
         sources: [],
         searchTime: Date.now() - startTime,
       };
