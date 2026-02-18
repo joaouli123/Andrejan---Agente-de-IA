@@ -21,6 +21,7 @@ const AIChat: React.FC = () => {
     }
   ]);
   const [isLoading, setIsLoading] = useState(false);
+  const sendingRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -32,7 +33,8 @@ const AIChat: React.FC = () => {
   }, [messages]);
 
   const handleSend = async () => {
-    if (!input.trim()) return;
+    if (!input.trim() || isLoading || sendingRef.current) return;
+    sendingRef.current = true;
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -63,10 +65,11 @@ const AIChat: React.FC = () => {
 
     setMessages(prev => [...prev, modelMessage]);
     setIsLoading(false);
+    sendingRef.current = false;
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !isLoading) {
       e.preventDefault();
       handleSend();
     }

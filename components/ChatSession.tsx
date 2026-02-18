@@ -30,6 +30,7 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
   const [session, setSession] = useState<ChatSession | undefined>(undefined);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const sendingRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [agents, setAgents] = useState<Agent[]>(Storage.getAgents());
   
@@ -82,7 +83,8 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
   }, [session?.messages]);
 
   const handleSend = async () => {
-    if (!input.trim() || !session) return;
+    if (!input.trim() || !session || isLoading || sendingRef.current) return;
+    sendingRef.current = true;
 
     const consumption = Storage.consumeUserQueryCredit();
     setQuotaStatus(consumption.status);
@@ -104,6 +106,7 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
       setSession(blockedSession);
       Storage.saveSession(blockedSession);
       onSessionUpdate();
+      sendingRef.current = false;
       return;
     }
 
@@ -161,10 +164,11 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
     setQuotaStatus(Storage.getUserQueryQuotaStatus());
     onSessionUpdate();
     setIsLoading(false);
+    sendingRef.current = false;
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !isLoading) {
       e.preventDefault();
       handleSend();
     }
