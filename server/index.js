@@ -35,6 +35,8 @@ const PORT = process.env.PORT || 3002;
 const PDF_DIR = process.env.PDF_PATH || path.join(__dirname, 'data', 'pdfs');
 const FRONTEND_BASE_URL = (process.env.FRONTEND_BASE_URL || 'https://elevex.uxcodedev.com.br').replace(/\/+$/, '');
 const MP_ACCESS_TOKEN = (process.env.MERCADO_PAGO_ACCESS_TOKEN || '').trim();
+const SUPABASE_URL_FALLBACK = 'https://cvrvpgzxbigulabwgoac.supabase.co';
+const SUPABASE_ANON_KEY_FALLBACK = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN2cnZwZ3p4YmlndWxhYndnb2FjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAzMTg4MzcsImV4cCI6MjA4NTg5NDgzN30.cdOs5jCtIMgBY0hLzt8YtvS3Mtcp3yO52DdfbfcPxRQ';
 
 const SUBSCRIPTION_PLANS = {
   free: { id: 'free', title: 'Plano Free', price: 0, planName: 'Free' },
@@ -1172,11 +1174,12 @@ app.delete('/api/clear-all', adminMiddleware, async (req, res) => {
 
     // Limpa registros de source_files no Supabase via REST API
     let supabaseCleared = false;
-    const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY;
+    const supabaseUrl = process.env.SUPABASE_URL || SUPABASE_URL_FALLBACK;
+    const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || SUPABASE_ANON_KEY_FALLBACK;
     if (supabaseUrl && supabaseKey) {
       try {
-        const sbRes = await fetch(`${supabaseUrl}/rest/v1/source_files?id=gt.0`, {
+        // PostgREST exige filtro no DELETE; `id=not.is.null` funciona para id numérico/uuid.
+        const sbRes = await fetch(`${supabaseUrl}/rest/v1/source_files?id=not.is.null`, {
           method: 'DELETE',
           headers: {
             'apikey': supabaseKey,
@@ -1186,7 +1189,10 @@ app.delete('/api/clear-all', adminMiddleware, async (req, res) => {
           },
         });
         supabaseCleared = sbRes.ok;
-        if (!sbRes.ok) console.warn('⚠️ Não foi possível limpar source_files no Supabase:', sbRes.status);
+        if (!sbRes.ok) {
+          const errorText = await sbRes.text().catch(() => 'sem detalhes');
+          console.warn('⚠️ Não foi possível limpar source_files no Supabase:', sbRes.status, errorText);
+        }
       } catch (e) {
         console.warn('⚠️ Erro ao limpar source_files no Supabase:', e.message);
       }
