@@ -183,7 +183,7 @@ const upload = multer({
       cb(new Error('Apenas arquivos PDF são permitidos!'), false);
     }
   },
-  limits: { fileSize: 50 * 1024 * 1024 } // 50MB max
+  limits: { fileSize: 500 * 1024 * 1024 } // 500MB max — suporta PDFs de até 1000 páginas
 });
 
 // ==================== ROTAS ====================
@@ -926,8 +926,9 @@ async function processUploadInBackground(taskId, filePath, originalName, brandNa
     
     let extracted;
     try {
-      // Timeout generoso — OCR interno agora para graciosamente e retorna resultados parciais
-      const extractTimeoutMs = Number.parseInt(process.env.UPLOAD_EXTRACT_TIMEOUT_MS || '', 10) || 600000; // 10min
+      // Safety net — OCR interno tem seu próprio timeout de 30min com resultados parciais
+      // Este timeout externo é apenas proteção final contra travamentos
+      const extractTimeoutMs = Number.parseInt(process.env.UPLOAD_EXTRACT_TIMEOUT_MS || '', 10) || 2700000; // 45min
 
       const timeoutPromise = new Promise((_, reject) => {
         setTimeout(() => reject(new Error(`Timeout na extração após ${Math.round(extractTimeoutMs / 1000)}s`)), extractTimeoutMs);
@@ -1334,6 +1335,11 @@ async function startServer() {
       console.log(`📚 Diretório de PDFs: ${PDF_DIR}`);
       console.log('⏳ Carregando base de vetores em background...\n');
     });
+
+    // Timeouts do servidor — suportar uploads de PDFs grandes (até 1000 páginas)
+    server.timeout = 0; // sem timeout no socket (o processamento é async)
+    server.keepAliveTimeout = 120000; // 2min keep-alive
+    server.headersTimeout = 125000; // um pouco maior que keepAlive
 
     server.on('error', (err) => {
       if (err.code === 'EADDRINUSE') {

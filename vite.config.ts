@@ -25,6 +25,7 @@ export default defineConfig(({ mode }) => {
             target: proxyTarget,
             changeOrigin: true,
             secure: true,
+            timeout: 600000, // 10min — uploads grandes passam pelo proxy
           },
         },
       },

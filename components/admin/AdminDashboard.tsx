@@ -208,7 +208,7 @@ export default function AdminDashboard() {
   }
 
   async function pollTaskStatus(taskId: string, onProgress: (task: any) => void): Promise<any> {
-    const maxAttempts = 600;
+    const maxAttempts = 3600; // 60 min — PDFs de 1000 páginas podem levar 30+ min
     let attempts = 0;
     while (attempts < maxAttempts) {
       try {
@@ -225,7 +225,7 @@ export default function AdminDashboard() {
       attempts++;
       await new Promise(r => setTimeout(r, 1000));
     }
-    return { status: 'error', message: 'Timeout: processamento demorou mais de 10 minutos' };
+    return { status: 'error', message: 'Timeout: processamento demorou mais de 60 minutos' };
   }
 
   function normalizeTaskProgress(task: any): number | undefined {
@@ -346,7 +346,7 @@ export default function AdminDashboard() {
         let res: Response;
         try {
           const uploadCtrl = new AbortController();
-          const uploadTimeout = setTimeout(() => uploadCtrl.abort(), 120_000); // 2min timeout for upload
+          const uploadTimeout = setTimeout(() => uploadCtrl.abort(), 600_000); // 10min timeout — PDFs grandes (500MB) precisam de mais tempo
           res = await fetch(uploadUrl, { 
             method: 'POST', 
             headers: { ...ragHeaders(true) },
@@ -357,7 +357,7 @@ export default function AdminDashboard() {
         } catch (networkError: any) {
           console.error('[Upload] Erro de rede:', networkError);
           const msg = networkError.name === 'AbortError'
-            ? 'Upload expirou (>2min). O servidor pode estar sobrecarregado.'
+            ? 'Upload expirou (>10min). O servidor pode estar sobrecarregado.'
             : `Erro de conexão: ${networkError.message}. Verifique se o servidor está online.`;
           updateFileStatus(i, { status: 'error', message: msg });
           continue;

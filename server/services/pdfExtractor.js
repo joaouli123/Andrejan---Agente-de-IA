@@ -24,7 +24,7 @@ const OCR_TEXT_THRESHOLD_PER_PAGE = 120;
 function getOcrPageTimeoutMs() {
   const env = parseInt(process.env.OCR_PAGE_TIMEOUT_MS || '', 10);
   if (Number.isFinite(env) && env >= 5000) return env;
-  return 45000;
+  return 60000; // 60s por página — PDFs grandes podem ter páginas complexas
 }
 
 // Pool de workers do Tesseract (CPU-bound) para usar vários cores
@@ -33,8 +33,8 @@ let tesseractWorkers = null;
 function getOcrWorkerCount() {
   const env = parseInt(process.env.OCR_WORKERS || '', 10);
   if (Number.isFinite(env) && env > 0) return Math.min(env, 8);
-  // Default conservador (i9 aguenta mais, mas OCR consome RAM)
-  return 2;
+  // 4 workers paralelos — necessário para PDFs de 500-1000 páginas em tempo razoável
+  return 4;
 }
 
 async function getTesseractWorkers() {
@@ -349,7 +349,8 @@ export async function extractTextWithOCR(filePath, onProgress) {
   let ocrPagesTotal = 0;
   
   // Global OCR timeout - returns partial results instead of throwing
-  const globalOcrTimeoutMs = Number.parseInt(process.env.UPLOAD_EXTRACT_TIMEOUT_MS || '', 10) || 300000; // 5min default
+  // 30min default — suficiente para ~1000 páginas com 4 workers paralelos
+  const globalOcrTimeoutMs = Number.parseInt(process.env.OCR_GLOBAL_TIMEOUT_MS || '', 10) || 1800000; // 30min
   const ocrStartTime = Date.now();
   
   try {
@@ -371,8 +372,9 @@ export async function extractTextWithOCR(filePath, onProgress) {
     let pageNum = 0;
     let pdfIterator;
     
-    const pdfScale = Number.parseFloat(process.env.PDF_IMG_SCALE || '2.0');
-    const safeScale = Number.isFinite(pdfScale) ? Math.min(Math.max(pdfScale, 1.0), 3.0) : 2.0;
+    // Scale 1.5 = bom equilíbrio OCR vs RAM para PDFs grandes (1000 págs)
+    const pdfScale = Number.parseFloat(process.env.PDF_IMG_SCALE || '1.5');
+    const safeScale = Number.isFinite(pdfScale) ? Math.min(Math.max(pdfScale, 1.0), 3.0) : 1.5;
 
     try {
       pdfIterator = await pdf(dataBuffer, { scale: safeScale });
@@ -447,7 +449,16 @@ export async function extractTextWithOCR(filePath, onProgress) {
         await pending.shift();
       }
 
-      if (pageNum % 10 === 0) {
+      // A cada 50 páginas: drena todas as pendências e sugere GC
+      // Evita acumular buffers de imagem em memória para PDFs grandes (500-1000 págs)
+      if (pageNum % 50 === 0) {
+        await Promise.allSettled(pending);
+        pending.length = 0;
+        if (global.gc) {
+          try { global.gc(); } catch {}
+        }
+        console.log(`   📄 OCR: ${pageNum}/${numPages || '?'} páginas processadas (${ocrResultsByPage.size} com texto)`);
+      } else if (pageNum % 10 === 0) {
         console.log(`   📄 OCR: ${pageNum}/${numPages || '?'} páginas processadas`);
       }
     }
