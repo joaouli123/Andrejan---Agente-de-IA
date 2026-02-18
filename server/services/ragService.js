@@ -508,7 +508,7 @@ function buildUnsafeUngroundedReply(sessionState, missingItems) {
 Não encontrei no contexto recuperado suporte literal para: ${items}.${modelLine ? `\n${modelLine}` : ''}
 
 Envie uma destas opções para eu responder com precisão:
-- página/foto do manual onde aparece a tabela/legenda/procedimento correspondente
+- número da página do manual onde aparece a tabela/legenda/procedimento correspondente
 - ou copie e cole o trecho exato do manual/diagrama
 - e confirme o nome do módulo/placa envolvido (como está escrito na placa) e o código/mensagem no display (se houver)`;
 }
@@ -627,7 +627,7 @@ function buildStatusIndicatorClarification(sessionState) {
 
 Para eu interpretar corretamente:
 - Em qual módulo/placa está esse indicador de status (nome escrito na placa/módulo)?
-- Você consegue enviar uma foto do LED e da legenda (ou a página do manual onde aparece a tabela de piscadas)?
+- Você consegue enviar o número da página do manual onde aparece a tabela de piscadas/legenda do LED?
 - Confirme se aparece alguma mensagem no terminal/display além de “fault”.`;
 }
 
@@ -1794,8 +1794,8 @@ Para eu confirmar os pinos sem chute, me envie uma destas coisas:
         answer: `Para manter segurança e precisão, eu não posso cravar esse detalhe sem evidência literal no contexto recuperado.
 
 Me envie um destes itens para eu responder com exatidão:
-- página exata do manual/diagrama onde aparece o ponto (conector/pino/tensão/código)
-- foto/recorte da tabela/legenda correspondente
+- número da página do manual/diagrama onde aparece o ponto (conector/pino/tensão/código)
+- trecho/tabela/legenda correspondente (copie e cole o texto)
 - ou o trecho textual literal do documento`,
         sources: selectedDocs.slice(0, 5).map(doc => ({
           source: doc.metadata?.source || 'Desconhecido',
@@ -1877,6 +1877,7 @@ Me envie um destes itens para eu responder com exatidão:
   - Não use floreios. Vá direto ao ponto.
   - Pode ser cordial, mas sempre profissional.
   - Quando NÃO souber por falta de evidência, diga isso claramente e peça apenas o mínimo que falta.
+  - NUNCA peça fotos, imagens, prints ou capturas de tela. O chat é SOMENTE TEXTO. Quando precisar de mais informação, peça descrições textuais: número da página do manual, nome da placa/módulo, código de erro no display, copiar e colar texto do manual, etc.
 
   Regra crítica de evidência (conectores/pinos):
   - NUNCA cite conector/pino/identificador (ex.: C1, J5, CN1, J*, P*) a menos que ele apareça explicitamente na BASE DE CONHECIMENTO abaixo.
@@ -1884,7 +1885,7 @@ Me envie um destes itens para eu responder com exatidão:
 
   Regra crítica de evidência (LED/piscadas/status):
   - NUNCA interprete padrão de piscadas (ex.: "4x/s", "1x a cada 10s") sem a tabela/legenda explícita na BASE.
-  - Se a legenda não estiver presente, peça a página/foto do manual e o nome do módulo/placa do indicador.
+  - Se a legenda não estiver presente, peça o número da página do manual e o nome do módulo/placa do indicador.
 
   Evite frases robóticas do tipo "Com base na documentação disponível...". Use linguagem natural, porém técnica.
 
