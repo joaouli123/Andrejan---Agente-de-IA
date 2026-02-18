@@ -350,7 +350,9 @@ export async function extractTextWithOCR(filePath, onProgress) {
   
   // Global OCR timeout - returns partial results instead of throwing
   // 30min default — suficiente para ~1000 páginas com 4 workers paralelos
-  const globalOcrTimeoutMs = Number.parseInt(process.env.OCR_GLOBAL_TIMEOUT_MS || '', 10) || 1800000; // 30min
+  // Mínimo 1800000 (30min) — ignora env vars com valores baixos demais
+  const envOcrTimeout = Number.parseInt(process.env.OCR_GLOBAL_TIMEOUT_MS || '', 10);
+  const globalOcrTimeoutMs = (Number.isFinite(envOcrTimeout) && envOcrTimeout >= 1800000) ? envOcrTimeout : 1800000; // 30min mínimo
   const ocrStartTime = Date.now();
   
   try {

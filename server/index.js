@@ -928,7 +928,9 @@ async function processUploadInBackground(taskId, filePath, originalName, brandNa
     try {
       // Safety net — OCR interno tem seu próprio timeout de 30min com resultados parciais
       // Este timeout externo é apenas proteção final contra travamentos
-      const extractTimeoutMs = Number.parseInt(process.env.UPLOAD_EXTRACT_TIMEOUT_MS || '', 10) || 2700000; // 45min
+      // Mínimo 45min — env vars antigas com 180s causavam falha em PDFs grandes
+      const envTimeout = Number.parseInt(process.env.UPLOAD_EXTRACT_TIMEOUT_MS || '', 10);
+      const extractTimeoutMs = (Number.isFinite(envTimeout) && envTimeout >= 2700000) ? envTimeout : 2700000; // 45min mínimo
 
       const timeoutPromise = new Promise((_, reject) => {
         setTimeout(() => reject(new Error(`Timeout na extração após ${Math.round(extractTimeoutMs / 1000)}s`)), extractTimeoutMs);
