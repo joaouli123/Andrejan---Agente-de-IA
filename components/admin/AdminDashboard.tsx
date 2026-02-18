@@ -189,6 +189,7 @@ export default function AdminDashboard() {
     setUploadTarget({ brandId, modelId });
     setFilesToUpload([]);
     setUploadStatuses([]);
+    setDuplicateFiles(new Set());
   }
 
   function updateFileStatus(index: number, update: Partial<UploadStatus>) {
@@ -431,11 +432,7 @@ export default function AdminDashboard() {
 
     setUploading(false);
     fetchAll();
-    setTimeout(() => {
-      setFilesToUpload([]);
-      setUploadTarget(null);
-      setUploadStatuses([]);
-    }, 5000);
+    // DON'T auto-close modal — let user see results and close manually
   }
 
   // ======================== SYNC BASE ========================
@@ -755,7 +752,7 @@ export default function AdminDashboard() {
 
       {/* Upload Modal (inline — avoids remount bug) */}
       {uploadTarget && (
-      <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => !uploading && setUploadTarget(null)}>
+      <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => { if (!uploading && uploadStatuses.every(s => s.status === 'done' || s.status === 'error' || s.status === 'waiting')) { setUploadTarget(null); setUploadStatuses([]); setFilesToUpload([]); } }}>
         <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6" onClick={e => e.stopPropagation()}>
           <div className="flex items-center justify-between mb-6">
             <div>
@@ -765,7 +762,7 @@ export default function AdminDashboard() {
               </p>
             </div>
             {!uploading && (
-              <button onClick={() => setUploadTarget(null)} className="p-2 hover:bg-slate-100 rounded-lg">
+              <button onClick={() => { setUploadTarget(null); setUploadStatuses([]); setFilesToUpload([]); }} className="p-2 hover:bg-slate-100 rounded-lg">
                 <X size={20} className="text-slate-400" />
               </button>
             )}
@@ -922,6 +919,38 @@ export default function AdminDashboard() {
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Summary + Close button after upload finishes */}
+          {!uploading && uploadStatuses.length > 0 && uploadStatuses.every(s => s.status === 'done' || s.status === 'error') && (
+            <div className="mt-4 space-y-3">
+              <div className={`text-center py-2 px-3 rounded-lg text-sm font-medium ${
+                uploadStatuses.every(s => s.status === 'done') 
+                  ? 'bg-green-50 text-green-700' 
+                  : uploadStatuses.every(s => s.status === 'error')
+                  ? 'bg-red-50 text-red-700'
+                  : 'bg-amber-50 text-amber-700'
+              }`}>
+                {uploadStatuses.filter(s => s.status === 'done').length > 0 && 
+                  `✅ ${uploadStatuses.filter(s => s.status === 'done').length} processado(s) com sucesso`}
+                {uploadStatuses.filter(s => s.status === 'error').length > 0 && 
+                  `${uploadStatuses.filter(s => s.status === 'done').length > 0 ? ' · ' : ''}❌ ${uploadStatuses.filter(s => s.status === 'error').length} com erro`}
+              </div>
+              <button
+                onClick={() => { setUploadTarget(null); setUploadStatuses([]); setFilesToUpload([]); }}
+                className="w-full py-2.5 rounded-xl font-bold bg-slate-800 text-white hover:bg-slate-900 transition-all"
+              >
+                Fechar
+              </button>
+            </div>
+          )}
+
+          {/* Spinner while uploading */}
+          {uploading && (
+            <div className="mt-3 flex items-center justify-center gap-2 text-sm text-blue-600">
+              <Loader2 size={16} className="animate-spin" />
+              <span>Processando... não feche esta janela</span>
             </div>
           )}
         </div>
