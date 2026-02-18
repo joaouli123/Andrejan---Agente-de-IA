@@ -9,6 +9,61 @@ import pdfParse from 'pdf-parse';
 import Tesseract from 'tesseract.js';
 import { v4 as uuidv4 } from 'uuid';
 
+// Sharp para pré-processamento de imagem (melhora OCR de scans)
+let _sharp = null;
+let _sharpChecked = false;
+
+async function getSharp() {
+  if (!_sharpChecked) {
+    _sharpChecked = true;
+    try {
+      _sharp = (await import('sharp')).default;
+      console.log('   ✅ Sharp carregado — pré-processamento de imagem ativo');
+    } catch {
+      console.warn('   ⚠️ sharp não instalado (npm i sharp) — OCR sem pré-processamento');
+    }
+  }
+  return _sharp;
+}
+
+/**
+ * Pré-processa imagem para melhorar qualidade do OCR em documentos escaneados.
+ * - Grayscale: remove cor, foca em contraste texto/fundo
+ * - Normalize: estica contraste para range completo (melhora scans desbotados)
+ * - Sharpen: realça bordas do texto
+ */
+async function preprocessForOCR(imageBuffer) {
+  const sharpLib = await getSharp();
+  if (!sharpLib) return imageBuffer;
+
+  try {
+    return await sharpLib(imageBuffer)
+      .grayscale()
+      .normalize()
+      .sharpen({ sigma: 1.5 })
+      .png()
+      .toBuffer();
+  } catch (err) {
+    console.warn('   ⚠️ Pré-processamento falhou, usando imagem original:', err.message);
+    return imageBuffer;
+  }
+}
+
+/**
+ * Limpa texto OCR removendo artefatos comuns de documentos escaneados.
+ */
+function cleanOCRText(text) {
+  if (!text) return '';
+  return text
+    // Remove linhas que são apenas caracteres especiais isolados (ruído OCR)
+    .replace(/^\s*[^a-zA-Z0-9À-ÿ\s]{1,3}\s*$/gm, '')
+    // Colapsa 4+ linhas em branco para 2
+    .replace(/\n{4,}/g, '\n\n')
+    // Remove espaçamento excessivo dentro de linhas
+    .replace(/[ \t]{4,}/g, '  ')
+    .trim();
+}
+
 // Tamanho máximo de cada chunk (em caracteres)
 const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 200;
@@ -359,12 +414,13 @@ export async function extractTextWithOCR(filePath, onProgress) {
     const { pdf } = await import('pdf-to-img');
     const workers = await getTesseractWorkers();
 
-    // Melhor para tabelas/diagramas: preserva espaços e usa segmentação mais "blocada"
+    // PSM 3 = segmentação automática de página (melhor para scans de apostilas/manuais)
+    // PSM 6 era para blocos uniformes, PSM 3 detecta layout (colunas, headers, tabelas)
     for (const w of workers) {
       try {
         await w.setParameters({
           preserve_interword_spaces: '1',
-          tessedit_pageseg_mode: '6',
+          tessedit_pageseg_mode: '3',
         });
       } catch {
         // ignora se não suportar
@@ -374,9 +430,10 @@ export async function extractTextWithOCR(filePath, onProgress) {
     let pageNum = 0;
     let pdfIterator;
     
-    // Scale 1.5 = bom equilíbrio OCR vs RAM para PDFs grandes (1000 págs)
-    const pdfScale = Number.parseFloat(process.env.PDF_IMG_SCALE || '1.5');
-    const safeScale = Number.isFinite(pdfScale) ? Math.min(Math.max(pdfScale, 1.0), 3.0) : 1.5;
+    // Scale 2.5 = melhor qualidade OCR para scans de apostilas/fotos
+    // Scans precisam de resolução alta para Tesseract ler bem (~300-500 DPI efetivo)
+    const pdfScale = Number.parseFloat(process.env.PDF_IMG_SCALE || '2.5');
+    const safeScale = Number.isFinite(pdfScale) ? Math.min(Math.max(pdfScale, 1.0), 4.0) : 2.5;
 
     try {
       pdfIterator = await pdf(dataBuffer, { scale: safeScale });
@@ -405,10 +462,17 @@ export async function extractTextWithOCR(filePath, onProgress) {
         const timeoutPromise = new Promise((_, reject) => {
           setTimeout(() => reject(new Error(`Timeout OCR (${timeoutMs}ms)`)), timeoutMs);
         });
-        const result = await Promise.race([w.recognize(pageImage), timeoutPromise]);
+        const preprocessed = await preprocessForOCR(pageImage);
+        const result = await Promise.race([w.recognize(preprocessed), timeoutPromise]);
         const pageText = result.data.text.trim();
-        if (pageText.length > 10) {
-          ocrResultsByPage.set(pageNumLocal, pageText);
+        const confidence = result.data.confidence || 0;
+        if (pageText.length > 10 && confidence > 12) {
+          ocrResultsByPage.set(pageNumLocal, cleanOCRText(pageText));
+          if (confidence < 35) {
+            console.warn(`   ⚠️ Página ${pageNumLocal}: confiança baixa (${Math.round(confidence)}%)`);
+          }
+        } else if (pageText.length > 10) {
+          console.warn(`   ⚠️ Página ${pageNumLocal}: confiança muito baixa (${Math.round(confidence)}%), ignorada`);
         }
       } catch (err) {
         // Worker already terminated (postMessage on null) — just skip
