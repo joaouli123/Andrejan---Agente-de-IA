@@ -7,7 +7,67 @@ import fs from 'fs';
 import path from 'path';
 import pdfParse from 'pdf-parse';
 import Tesseract from 'tesseract.js';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import dotenv from 'dotenv';
 import { v4 as uuidv4 } from 'uuid';
+
+dotenv.config();
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+const visionModel = genAI.getGenerativeModel({
+  model: 'gemini-2.5-flash',
+  generationConfig: {
+    temperature: 0.1,
+    topP: 0.9,
+    maxOutputTokens: 8192
+  }
+});
+
+function normalizeMarkdownOutput(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return '';
+  return raw
+    .replace(/^```(?:markdown|md)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+}
+
+async function renderPdfPagesAsImages(dataBuffer, scale = 2.0) {
+  const images = [];
+
+  // Tentativa 1: pdf-img-convert (quando disponível/compatível no runtime)
+  try {
+    const pdfImgConvertModule = await import('pdf-img-convert');
+    const convertFn =
+      pdfImgConvertModule?.default ||
+      pdfImgConvertModule?.convert ||
+      pdfImgConvertModule?.pdf2img ||
+      null;
+
+    if (typeof convertFn === 'function') {
+      const converted = await convertFn(dataBuffer, { scale });
+      if (Array.isArray(converted) && converted.length > 0) {
+        for (const pageImg of converted) {
+          if (Buffer.isBuffer(pageImg)) images.push(pageImg);
+          else if (typeof pageImg === 'string') images.push(Buffer.from(pageImg, 'base64'));
+        }
+      }
+    }
+  } catch {
+    // fallback para pdf-to-img abaixo
+  }
+
+  if (images.length > 0) return images;
+
+  // Tentativa 2 (fallback): pdf-to-img, já está estável no projeto
+  const { pdf } = await import('pdf-to-img');
+  const iterator = await pdf(dataBuffer, { scale });
+  for await (const pageImage of iterator) {
+    images.push(pageImage);
+  }
+
+  return images;
+}
 
 // Sharp para pré-processamento de imagem (melhora OCR de scans)
 let _sharp = null;
@@ -391,169 +451,103 @@ export async function extractTextWithOCR(filePath, onProgress) {
     };
   }
   
-  // 3. PDF sem texto suficiente OU páginas fracas detectadas — tentar OCR
+  // 3. PDF sem texto suficiente OU páginas fracas detectadas — OCR multimodal com Gemini
   const reason = !pdfData
     ? 'pdf-parse falhou completamente'
     : (hasGoodText ? `páginas com pouco texto detectadas (${pagesToOCR.size})` : `pouco texto (${Math.round(avgCharsPerPage)} chars/pág)`);
-  console.log(`   🔍 ${reason} — ativando OCR...`);
-  if (onProgress) onProgress({ phase: 'ocr_start', message: 'PDF com imagens detectado, iniciando OCR...' });
-  
+  console.log(`   🔍 ${reason} — ativando OCR multimodal (Gemini 2.5 Flash)...`);
+  if (onProgress) onProgress({ phase: 'ocr_start', message: 'Iniciando transcrição multimodal com Gemini...' });
+
   let ocrText = '';
   let ocrPages = 0;
   let ocrPartialResult = false;
   let ocrPagesTotal = 0;
-  
-  // Global OCR timeout - returns partial results instead of throwing
-  // 30min default — suficiente para ~1000 páginas com 4 workers paralelos
-  // Mínimo 1800000 (30min) — ignora env vars com valores baixos demais
+
   const envOcrTimeout = Number.parseInt(process.env.OCR_GLOBAL_TIMEOUT_MS || '', 10);
-  const globalOcrTimeoutMs = (Number.isFinite(envOcrTimeout) && envOcrTimeout >= 1800000) ? envOcrTimeout : 1800000; // 30min mínimo
+  const globalOcrTimeoutMs = (Number.isFinite(envOcrTimeout) && envOcrTimeout >= 1800000) ? envOcrTimeout : 1800000;
   const ocrStartTime = Date.now();
-  
+
   try {
-    const { pdf } = await import('pdf-to-img');
-    const workers = await getTesseractWorkers();
-
-    // PSM 3 = segmentação automática de página (melhor para scans de apostilas/manuais)
-    // PSM 6 era para blocos uniformes, PSM 3 detecta layout (colunas, headers, tabelas)
-    for (const w of workers) {
-      try {
-        await w.setParameters({
-          preserve_interword_spaces: '1',
-          tessedit_pageseg_mode: '3',
-        });
-      } catch {
-        // ignora se não suportar
-      }
-    }
-    
-    let pageNum = 0;
-    let pdfIterator;
-    
-    // Scale 2.5 = melhor qualidade OCR para scans de apostilas/fotos
-    // Scans precisam de resolução alta para Tesseract ler bem (~300-500 DPI efetivo)
-    const pdfScale = Number.parseFloat(process.env.PDF_IMG_SCALE || '2.5');
-    const safeScale = Number.isFinite(pdfScale) ? Math.min(Math.max(pdfScale, 1.0), 4.0) : 2.5;
-
-    try {
-      pdfIterator = await pdf(dataBuffer, { scale: safeScale });
-    } catch (pdfImgErr) {
-      // Tentar com escala menor se a escala 2.0 falhar
-      console.log(`   ⚠️ pdf-to-img falhou com scale=${safeScale}: ${pdfImgErr.message}`);
-      console.log(`   🔄 Tentando com scale=1.0...`);
-      try {
-        pdfIterator = await pdf(dataBuffer, { scale: 1.0 });
-      } catch (pdfImgErr2) {
-        throw new Error(`pdf-to-img não conseguiu processar: ${pdfImgErr2.message}`);
-      }
+    if (!process.env.GEMINI_API_KEY) {
+      throw new Error('GEMINI_API_KEY não configurada para OCR multimodal');
     }
 
-    const ocrResultsByPage = new Map();
-    const maxPending = Math.max(1, parseInt(process.env.OCR_MAX_PENDING || '', 10) || (workers.length * 2));
-    const pending = [];
-    let nextWorker = 0;
+    // Requisito: renderização com scale 2.0 para nitidez
+    const pageImages = await renderPdfPagesAsImages(dataBuffer, 2.0);
+    if (!pageImages.length) {
+      throw new Error('Nenhuma página convertida para imagem');
+    }
 
-    let ocrAborted = false;
+    const totalPages = numPages > 0 ? numPages : pageImages.length;
+    const indicesToProcess = [];
+    for (let i = 0; i < pageImages.length; i++) {
+      const page = i + 1;
+      if (pagesToOCR.size > 0 && !pagesToOCR.has(page)) continue;
+      indicesToProcess.push(i);
+    }
 
-    const runRecognize = async (w, pageNumLocal, pageImage) => {
-      if (ocrAborted) return; // Skip if already aborted
-      try {
-        const timeoutMs = getOcrPageTimeoutMs();
-        const timeoutPromise = new Promise((_, reject) => {
-          setTimeout(() => reject(new Error(`Timeout OCR (${timeoutMs}ms)`)), timeoutMs);
-        });
-        const preprocessed = await preprocessForOCR(pageImage);
-        const result = await Promise.race([w.recognize(preprocessed), timeoutPromise]);
-        const pageText = result.data.text.trim();
-        const confidence = result.data.confidence || 0;
-        if (pageText.length > 10 && confidence > 12) {
-          ocrResultsByPage.set(pageNumLocal, cleanOCRText(pageText));
-          if (confidence < 35) {
-            console.warn(`   ⚠️ Página ${pageNumLocal}: confiança baixa (${Math.round(confidence)}%)`);
-          }
-        } else if (pageText.length > 10) {
-          console.warn(`   ⚠️ Página ${pageNumLocal}: confiança muito baixa (${Math.round(confidence)}%), ignorada`);
-        }
-      } catch (err) {
-        // Worker already terminated (postMessage on null) — just skip
-        if (err?.message?.includes('postMessage') || err?.message?.includes('null') || err?.message?.includes('terminated')) {
-          ocrAborted = true;
-          return;
-        }
-        console.warn(`   ⚠️ OCR falhou na página ${pageNumLocal}: ${err.message}`);
-      }
-    };
+    const markdownPrompt = [
+      'Você é um extrator OCR técnico para manuais de elevadores.',
+      'Transcreva EXATAMENTE o conteúdo da imagem para Markdown.',
+      'Regras obrigatórias:',
+      '1) Saída SOMENTE em Markdown, sem explicações.',
+      '2) Preserve tabelas usando sintaxe Markdown de tabela (| coluna | coluna |).',
+      '3) Preserve códigos técnicos, pinagem, labels, números e unidades.',
+      '4) Mantenha a ordem visual da página.',
+      '5) Não invente texto que não aparece na imagem.',
+      '6) Se a página estiver ilegível ou vazia, retorne exatamente: [PAGINA_ILEGIVEL]'
+    ].join('\n');
 
-    for await (const pageImage of pdfIterator) {
-      pageNum++;
+    for (let idx = 0; idx < indicesToProcess.length; idx++) {
+      const pageIndex = indicesToProcess[idx];
+      const pageNum = pageIndex + 1;
 
-      // Check global timeout — stop gracefully and keep partial results
       if (Date.now() - ocrStartTime > globalOcrTimeoutMs) {
-        console.log(`   ⏱️ OCR timeout global (${Math.round(globalOcrTimeoutMs/1000)}s) atingido na página ${pageNum}/${numPages || '?'}. Salvando progresso parcial...`);
-        if (onProgress) onProgress({ phase: 'ocr', message: `OCR parcial: timeout na página ${pageNum}. Salvando o que foi processado...`, progress: 90 });
+        console.log(`   ⏱️ OCR timeout global (${Math.round(globalOcrTimeoutMs / 1000)}s) na página ${pageNum}/${totalPages}. Salvando parcial...`);
+        ocrPartialResult = true;
         break;
       }
 
-      // OCR seletivo: se temos lista de páginas, só reconhece nelas
-      if (pagesToOCR.size > 0 && !pagesToOCR.has(pageNum)) {
-        continue;
-      }
-      
       if (onProgress) {
-        onProgress({ 
-          phase: 'ocr', 
-          message: `OCR página ${pageNum}/${numPages || '?'}${pagesToOCR.size > 0 ? ' (seletivo)' : ''}...`,
-          progress: numPages > 0 ? Math.round((pageNum / numPages) * 100) : 0
+        const progressPct = Math.round(((idx + 1) / Math.max(1, indicesToProcess.length)) * 100);
+        onProgress({
+          phase: 'ocr',
+          message: `Gemini OCR página ${pageNum}/${totalPages}${pagesToOCR.size > 0 ? ' (seletivo)' : ''}...`,
+          progress: progressPct
         });
       }
-      
-      const w = workers[nextWorker++ % workers.length];
-      const p = runRecognize(w, pageNum, pageImage);
-      pending.push(p);
-      if (pending.length >= maxPending) {
-        // Mantém o pipeline andando sem estourar memória
-        await pending.shift();
-      }
 
-      // A cada 50 páginas: drena todas as pendências e sugere GC
-      // Evita acumular buffers de imagem em memória para PDFs grandes (500-1000 págs)
-      if (pageNum % 50 === 0) {
-        await Promise.allSettled(pending);
-        pending.length = 0;
-        if (global.gc) {
-          try { global.gc(); } catch {}
+      try {
+        const imageBase64 = pageImages[pageIndex].toString('base64');
+        const result = await visionModel.generateContent([
+          { text: markdownPrompt },
+          {
+            inlineData: {
+              mimeType: 'image/png',
+              data: imageBase64
+            }
+          }
+        ]);
+
+        const pageMarkdown = normalizeMarkdownOutput(result?.response?.text?.() || '');
+        if (pageMarkdown && pageMarkdown !== '[PAGINA_ILEGIVEL]') {
+          ocrText += `\n--- Página ${pageNum} (OCR) ---\n${pageMarkdown}\n`;
+          ocrPages++;
         }
-        console.log(`   📄 OCR: ${pageNum}/${numPages || '?'} páginas processadas (${ocrResultsByPage.size} com texto)`);
-      } else if (pageNum % 10 === 0) {
-        console.log(`   📄 OCR: ${pageNum}/${numPages || '?'} páginas processadas`);
+      } catch (pageErr) {
+        console.warn(`   ⚠️ Gemini OCR falhou na página ${pageNum}: ${pageErr.message}`);
+      }
+
+      if ((idx + 1) % 10 === 0 || (idx + 1) === indicesToProcess.length) {
+        console.log(`   📄 Gemini OCR: ${idx + 1}/${indicesToProcess.length} páginas processadas (${ocrPages} com texto)`);
       }
     }
 
-    // Espera terminar o que ficou pendente
-    await Promise.allSettled(pending);
-
-    // Monta o OCR na ordem das páginas
-    const pagesSorted = [...ocrResultsByPage.keys()].sort((a, b) => a - b);
-    for (const pNum of pagesSorted) {
-      const txt = ocrResultsByPage.get(pNum);
-      if (txt && txt.length > 10) {
-        ocrText += `\n--- Página ${pNum} (OCR) ---\n${txt}\n`;
-        ocrPages++;
-      }
-    }
-    
-    // Se pdf-parse não detectou páginas, usa o que o OCR contou
-    if (numPages === 0) numPages = pageNum;
-    
-    const isPartial = Date.now() - ocrStartTime > globalOcrTimeoutMs;
-    const ocrPagesProcessed = pageNum;
-    ocrPartialResult = isPartial;
-    ocrPagesTotal = ocrPagesProcessed;
-    console.log(`   ${isPartial ? '⏱️' : '✅'} OCR ${isPartial ? 'parcial' : 'concluído'}: ${ocrPages}/${ocrPagesProcessed} páginas com texto, ${ocrText.length} chars${isPartial ? ' (timeout atingido)' : ''}`);
-    
+    ocrPagesTotal = indicesToProcess.length;
+    if (numPages === 0) numPages = totalPages;
+    console.log(`   ${ocrPartialResult ? '⏱️' : '✅'} Gemini OCR ${ocrPartialResult ? 'parcial' : 'concluído'}: ${ocrPages}/${ocrPagesTotal} páginas com texto, ${ocrText.length} chars`);
   } catch (ocrError) {
-    console.error('   ❌ Erro no OCR pipeline:', ocrError.message);
-    // Se temos algum texto do pdf-parse, usamos como fallback
+    console.error('   ❌ Erro no OCR multimodal (Gemini):', ocrError.message);
     if (parsedText.trim().length > 0) {
       console.log(`   ↩️ Fallback: usando ${parsedText.length} chars do pdf-parse`);
     }
