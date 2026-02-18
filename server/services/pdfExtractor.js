@@ -345,6 +345,12 @@ export async function extractTextWithOCR(filePath, onProgress) {
   
   let ocrText = '';
   let ocrPages = 0;
+  let ocrPartialResult = false;
+  let ocrPagesTotal = 0;
+  
+  // Global OCR timeout - returns partial results instead of throwing
+  const globalOcrTimeoutMs = Number.parseInt(process.env.UPLOAD_EXTRACT_TIMEOUT_MS || '', 10) || 300000; // 5min default
+  const ocrStartTime = Date.now();
   
   try {
     const { pdf } = await import('pdf-to-img');
@@ -413,6 +419,13 @@ export async function extractTextWithOCR(filePath, onProgress) {
     for await (const pageImage of pdfIterator) {
       pageNum++;
 
+      // Check global timeout — stop gracefully and keep partial results
+      if (Date.now() - ocrStartTime > globalOcrTimeoutMs) {
+        console.log(`   ⏱️ OCR timeout global (${Math.round(globalOcrTimeoutMs/1000)}s) atingido na página ${pageNum}/${numPages || '?'}. Salvando progresso parcial...`);
+        if (onProgress) onProgress({ phase: 'ocr', message: `OCR parcial: timeout na página ${pageNum}. Salvando o que foi processado...`, progress: 90 });
+        break;
+      }
+
       // OCR seletivo: se temos lista de páginas, só reconhece nelas
       if (pagesToOCR.size > 0 && !pagesToOCR.has(pageNum)) {
         continue;
@@ -455,7 +468,11 @@ export async function extractTextWithOCR(filePath, onProgress) {
     // Se pdf-parse não detectou páginas, usa o que o OCR contou
     if (numPages === 0) numPages = pageNum;
     
-    console.log(`   ✅ OCR concluído: ${ocrPages}/${pageNum} páginas com texto, ${ocrText.length} chars`);
+    const isPartial = Date.now() - ocrStartTime > globalOcrTimeoutMs;
+    const ocrPagesProcessed = pageNum;
+    ocrPartialResult = isPartial;
+    ocrPagesTotal = ocrPagesProcessed;
+    console.log(`   ${isPartial ? '⏱️' : '✅'} OCR ${isPartial ? 'parcial' : 'concluído'}: ${ocrPages}/${ocrPagesProcessed} páginas com texto, ${ocrText.length} chars${isPartial ? ' (timeout atingido)' : ''}`);
     
   } catch (ocrError) {
     console.error('   ❌ Erro no OCR pipeline:', ocrError.message);
@@ -478,7 +495,9 @@ export async function extractTextWithOCR(filePath, onProgress) {
     info,
     metadata,
     ocrUsed: ocrText.length > 0,
-    ocrChars: ocrText.length
+    ocrChars: ocrText.length,
+    ocrPartial: ocrPartialResult,
+    ocrPagesProcessed: ocrPagesTotal
   };
 }
 

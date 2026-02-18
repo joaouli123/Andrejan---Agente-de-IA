@@ -926,7 +926,9 @@ async function processUploadInBackground(taskId, filePath, originalName, brandNa
     
     let extracted;
     try {
-      const extractTimeoutMs = Number.parseInt(process.env.UPLOAD_EXTRACT_TIMEOUT_MS || '', 10) || 180000;
+      // Timeout generoso — OCR interno agora para graciosamente e retorna resultados parciais
+      const extractTimeoutMs = Number.parseInt(process.env.UPLOAD_EXTRACT_TIMEOUT_MS || '', 10) || 600000; // 10min
+
       const timeoutPromise = new Promise((_, reject) => {
         setTimeout(() => reject(new Error(`Timeout na extração após ${Math.round(extractTimeoutMs / 1000)}s`)), extractTimeoutMs);
       });
@@ -946,7 +948,7 @@ async function processUploadInBackground(taskId, filePath, originalName, brandNa
       }), timeoutPromise]);
     } catch (extractErr) {
       console.error(`   ❌ [${taskId}] Extração OCR falhou/timeout: ${extractErr.message}`);
-      task.message = 'OCR demorou demais. Tentando extração sem OCR...';
+      task.message = 'OCR falhou. Tentando extração sem OCR...';
       task.progress = 20;
 
       // Tenta fallback resiliente sem OCR
@@ -963,14 +965,14 @@ async function processUploadInBackground(taskId, filePath, originalName, brandNa
         };
 
         if (!extracted.text || extracted.text.trim().length < 30) {
-          throw new Error('fallback sem OCR também retornou pouco texto');
+          throw new Error('fallback sem OCR também retornou pouco texto (PDF provavelmente é de imagem)');
         }
 
-        task.message = 'OCR indisponível no momento. Prosseguindo com texto extraído do PDF.';
+        task.message = 'Prosseguindo com texto extraído do PDF (sem OCR).';
         task.progress = 40;
       } catch (fallbackErr) {
         task.status = 'error';
-        task.message = `Erro na extração: ${extractErr.message}. Fallback também falhou: ${fallbackErr.message}`;
+        task.message = `Erro na extração: ${extractErr.message}. Fallback: ${fallbackErr.message}`;
         setTimeout(() => processingTasks.delete(taskId), 5 * 60 * 1000);
         return;
       }
@@ -986,7 +988,11 @@ async function processUploadInBackground(taskId, filePath, originalName, brandNa
     
     task.pages = extracted.numPages;
     if (extracted.ocrUsed) {
-      console.log(`   🔤 [${taskId}] OCR utilizado: +${extracted.ocrChars} chars`);
+      const partialNote = extracted.ocrPartial ? ' (parcial — timeout atingido)' : '';
+      console.log(`   🔤 [${taskId}] OCR utilizado${partialNote}: +${extracted.ocrChars} chars de ${extracted.ocrPagesProcessed || '?'}/${extracted.numPages} páginas`);
+      if (extracted.ocrPartial) {
+        task.message = `OCR parcial: ${extracted.ocrPagesProcessed}/${extracted.numPages} páginas processadas (timeout). Prosseguindo com texto disponível...`;
+      }
     }
     
     // Fase 2: Dividir em chunks
