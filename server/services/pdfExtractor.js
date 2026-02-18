@@ -5,6 +5,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import pdfParse from 'pdf-parse';
 import Tesseract from 'tesseract.js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
@@ -34,9 +35,17 @@ function normalizeMarkdownOutput(text) {
 
 async function renderPdfPagesAsImages(dataBuffer, scale = 2.0) {
   const images = [];
+  const preferredEngine = (process.env.PDF_RENDER_ENGINE || 'pdf-to-img').trim().toLowerCase();
 
-  // Tentativa 1: pdf-img-convert (quando disponível/compatível no runtime)
-  try {
+  const renderWithPdfToImg = async () => {
+    const { pdf } = await import('pdf-to-img');
+    const iterator = await pdf(dataBuffer, { scale });
+    for await (const pageImage of iterator) {
+      images.push(pageImage);
+    }
+  };
+
+  const renderWithPdfImgConvert = async () => {
     const pdfImgConvertModule = await import('pdf-img-convert');
     const convertFn =
       pdfImgConvertModule?.default ||
@@ -44,15 +53,34 @@ async function renderPdfPagesAsImages(dataBuffer, scale = 2.0) {
       pdfImgConvertModule?.pdf2img ||
       null;
 
-    if (typeof convertFn === 'function') {
-      const converted = await convertFn(dataBuffer, { scale });
-      if (Array.isArray(converted) && converted.length > 0) {
-        for (const pageImg of converted) {
-          if (Buffer.isBuffer(pageImg)) images.push(pageImg);
-          else if (typeof pageImg === 'string') images.push(Buffer.from(pageImg, 'base64'));
-        }
-      }
+    if (typeof convertFn !== 'function') {
+      throw new Error('pdf-img-convert sem função de conversão compatível');
     }
+
+    const converted = await convertFn(dataBuffer, { scale });
+    if (!Array.isArray(converted) || converted.length === 0) {
+      throw new Error('pdf-img-convert retornou 0 páginas');
+    }
+
+    for (const pageImg of converted) {
+      if (Buffer.isBuffer(pageImg)) images.push(pageImg);
+      else if (typeof pageImg === 'string') images.push(Buffer.from(pageImg, 'base64'));
+    }
+  };
+
+  if (preferredEngine === 'pdf-to-img') {
+    await renderWithPdfToImg();
+    return images;
+  }
+
+  if (preferredEngine === 'pdf-img-convert') {
+    await renderWithPdfImgConvert();
+    return images;
+  }
+
+  // Tentativa 1: pdf-img-convert (quando disponível/compatível no runtime)
+  try {
+    await renderWithPdfImgConvert();
   } catch {
     // fallback para pdf-to-img abaixo
   }
@@ -60,11 +88,7 @@ async function renderPdfPagesAsImages(dataBuffer, scale = 2.0) {
   if (images.length > 0) return images;
 
   // Tentativa 2 (fallback): pdf-to-img, já está estável no projeto
-  const { pdf } = await import('pdf-to-img');
-  const iterator = await pdf(dataBuffer, { scale });
-  for await (const pageImage of iterator) {
-    images.push(pageImage);
-  }
+  await renderWithPdfToImg();
 
   return images;
 }
@@ -140,6 +164,37 @@ function getOcrPageTimeoutMs() {
   const env = parseInt(process.env.OCR_PAGE_TIMEOUT_MS || '', 10);
   if (Number.isFinite(env) && env >= 5000) return env;
   return 60000; // 60s por página — PDFs grandes podem ter páginas complexas
+}
+
+function getVisionPageTimeoutMs() {
+  const env = parseInt(process.env.OCR_VISION_PAGE_TIMEOUT_MS || '', 10);
+  if (Number.isFinite(env) && env >= 15000) return env;
+  return process.env.NODE_ENV === 'production' ? 120000 : 180000;
+}
+
+function getVisionConcurrency() {
+  const env = parseInt(process.env.OCR_VISION_CONCURRENCY || '', 10);
+  if (Number.isFinite(env) && env > 0) return Math.min(env, 12);
+
+  if (process.env.NODE_ENV === 'production') return 2;
+  const cpuCount = Array.isArray(os.cpus?.()) ? os.cpus().length : 4;
+  return Math.max(2, Math.min(8, Math.floor(cpuCount / 2)));
+}
+
+function getVisionMaxRetries() {
+  const env = parseInt(process.env.OCR_VISION_RETRIES || '', 10);
+  if (Number.isFinite(env) && env >= 0) return Math.min(env, 6);
+  return process.env.NODE_ENV === 'production' ? 1 : 2;
+}
+
+function getVisionRetryBackoffMs(attempt) {
+  const base = parseInt(process.env.OCR_VISION_RETRY_BASE_MS || '', 10);
+  const baseMs = Number.isFinite(base) && base >= 100 ? base : 1200;
+  return baseMs * Math.max(1, attempt);
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // Pool de workers do Tesseract (CPU-bound) para usar vários cores
@@ -498,49 +553,91 @@ export async function extractTextWithOCR(filePath, onProgress) {
       '6) Se a página estiver ilegível ou vazia, retorne exatamente: [PAGINA_ILEGIVEL]'
     ].join('\n');
 
-    for (let idx = 0; idx < indicesToProcess.length; idx++) {
-      const pageIndex = indicesToProcess[idx];
+    const perPageTimeoutMs = getVisionPageTimeoutMs();
+    const maxRetries = getVisionMaxRetries();
+    const concurrency = Math.max(1, Math.min(getVisionConcurrency(), indicesToProcess.length || 1));
+    const resultsByPage = new Map();
+    let processedCount = 0;
+    let nextIdx = 0;
+
+    const processOnePage = async (pageIndex) => {
       const pageNum = pageIndex + 1;
+      const imageBase64 = pageImages[pageIndex].toString('base64');
 
-      if (Date.now() - ocrStartTime > globalOcrTimeoutMs) {
-        console.log(`   ⏱️ OCR timeout global (${Math.round(globalOcrTimeoutMs / 1000)}s) na página ${pageNum}/${totalPages}. Salvando parcial...`);
-        ocrPartialResult = true;
-        break;
-      }
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error(`Timeout Gemini página (${perPageTimeoutMs}ms)`)), perPageTimeoutMs);
+          });
 
-      if (onProgress) {
-        const progressPct = Math.round(((idx + 1) / Math.max(1, indicesToProcess.length)) * 100);
-        onProgress({
-          phase: 'ocr',
-          message: `Gemini OCR página ${pageNum}/${totalPages}${pagesToOCR.size > 0 ? ' (seletivo)' : ''}...`,
-          progress: progressPct
-        });
-      }
+          const result = await Promise.race([
+            visionModel.generateContent([
+              { text: markdownPrompt },
+              {
+                inlineData: {
+                  mimeType: 'image/png',
+                  data: imageBase64
+                }
+              }
+            ]),
+            timeoutPromise
+          ]);
 
-      try {
-        const imageBase64 = pageImages[pageIndex].toString('base64');
-        const result = await visionModel.generateContent([
-          { text: markdownPrompt },
-          {
-            inlineData: {
-              mimeType: 'image/png',
-              data: imageBase64
-            }
+          const pageMarkdown = normalizeMarkdownOutput(result?.response?.text?.() || '');
+          if (pageMarkdown && pageMarkdown !== '[PAGINA_ILEGIVEL]') {
+            resultsByPage.set(pageNum, cleanOCRText(pageMarkdown));
           }
-        ]);
-
-        const pageMarkdown = normalizeMarkdownOutput(result?.response?.text?.() || '');
-        if (pageMarkdown && pageMarkdown !== '[PAGINA_ILEGIVEL]') {
-          ocrText += `\n--- Página ${pageNum} (OCR) ---\n${pageMarkdown}\n`;
-          ocrPages++;
+          return;
+        } catch (err) {
+          const isLastAttempt = attempt >= maxRetries;
+          if (isLastAttempt) {
+            console.warn(`   ⚠️ Gemini OCR falhou na página ${pageNum}: ${err.message}`);
+            return;
+          }
+          await sleep(getVisionRetryBackoffMs(attempt + 1));
         }
-      } catch (pageErr) {
-        console.warn(`   ⚠️ Gemini OCR falhou na página ${pageNum}: ${pageErr.message}`);
       }
+    };
 
-      if ((idx + 1) % 10 === 0 || (idx + 1) === indicesToProcess.length) {
-        console.log(`   📄 Gemini OCR: ${idx + 1}/${indicesToProcess.length} páginas processadas (${ocrPages} com texto)`);
+    const worker = async () => {
+      while (true) {
+        const idx = nextIdx++;
+        if (idx >= indicesToProcess.length) return;
+
+        const pageIndex = indicesToProcess[idx];
+        const pageNum = pageIndex + 1;
+
+        if (Date.now() - ocrStartTime > globalOcrTimeoutMs) {
+          ocrPartialResult = true;
+          return;
+        }
+
+        if (onProgress) {
+          const progressPct = Math.round(((processedCount + 1) / Math.max(1, indicesToProcess.length)) * 100);
+          onProgress({
+            phase: 'ocr',
+            message: `Gemini OCR página ${pageNum}/${totalPages}${pagesToOCR.size > 0 ? ' (seletivo)' : ''}...`,
+            progress: progressPct
+          });
+        }
+
+        await processOnePage(pageIndex);
+        processedCount++;
+
+        if (processedCount % 10 === 0 || processedCount === indicesToProcess.length) {
+          console.log(`   📄 Gemini OCR: ${processedCount}/${indicesToProcess.length} páginas processadas (${resultsByPage.size} com texto)`);
+        }
       }
+    };
+
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+    const sortedPages = [...resultsByPage.keys()].sort((a, b) => a - b);
+    for (const pageNum of sortedPages) {
+      const pageMarkdown = resultsByPage.get(pageNum);
+      if (!pageMarkdown) continue;
+      ocrText += `\n--- Página ${pageNum} (OCR) ---\n${pageMarkdown}\n`;
+      ocrPages++;
     }
 
     ocrPagesTotal = indicesToProcess.length;
