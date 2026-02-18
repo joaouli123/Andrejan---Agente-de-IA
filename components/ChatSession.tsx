@@ -56,7 +56,7 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
       setSession(loaded);
     }
     setIsHeaderMenuOpen(false); // Close menu on session change
-  }, [sessionId, allSessions]); 
+  }, [sessionId]); 
 
   useEffect(() => {
     const refreshQuota = () => setQuotaStatus(Storage.getUserQueryQuotaStatus());
@@ -86,6 +86,7 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
     if (!input.trim() || !session || isLoading || sendingRef.current) return;
     sendingRef.current = true;
 
+    try {
     const consumption = Storage.consumeUserQueryCredit();
     setQuotaStatus(consumption.status);
     if (!consumption.allowed) {
@@ -106,7 +107,6 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
       setSession(blockedSession);
       Storage.saveSession(blockedSession);
       onSessionUpdate();
-      sendingRef.current = false;
       return;
     }
 
@@ -164,12 +164,15 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
     setQuotaStatus(Storage.getUserQueryQuotaStatus());
     onSessionUpdate();
     setIsLoading(false);
-    sendingRef.current = false;
+    } finally {
+      sendingRef.current = false;
+    }
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey && !isLoading) {
+    if (e.key === 'Enter' && !e.shiftKey && !isLoading && !sendingRef.current) {
       e.preventDefault();
+      e.stopPropagation();
       handleSend();
     }
   };
@@ -513,6 +516,7 @@ const ChatSessionView: React.FC<ChatSessionProps> = ({
                 autoFocus
                 />
                 <button
+                type="button"
                 onClick={handleSend}
                 disabled={!input.trim() || isLoading || quotaStatus.isBlocked}
                 className={`absolute right-2 top-2 bottom-2 aspect-square rounded-lg flex items-center justify-center transition-all duration-300 ${
